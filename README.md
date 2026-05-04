@@ -10,6 +10,7 @@ You wake up after a fifteen-year coma and have to rebuild your life in Las Playa
 - Hidden law vs crime system
 - Police heat and consequences
 - Inventory and survival mechanics
+- $100,000 financial independence goal and ending
 - Persistent memory and storytelling
 - Terminal-style UI
 
@@ -35,4 +36,5 @@ The current playable build starts in the hospital and completes a first end-to-e
 - `View Choices` with exactly four clickable actions every turn
 - `Select Choice` to update player state
 - `Track Player Progress` through visible survival stats
+- `Reach Financial Independence` by getting $100,000 in the player account
 - `View Inventory`, `Save Game` (in progress), and `Quit Game`

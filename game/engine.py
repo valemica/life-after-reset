@@ -3,14 +3,16 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from game.state import add_event, add_unique_item, normalize_state
+from game.state import FINANCIAL_INDEPENDENCE_GOAL, add_event, add_unique_item, normalize_state
 
 
 def get_scene(state: dict[str, Any]) -> dict[str, Any]:
+    normalize_state(state)
     builders = {
         "hospital_intro": build_hospital_intro,
         "discharge_hub": build_discharge_hub,
         "street_hub": build_street_hub,
+        "financial_independence_ending": build_financial_independence_ending,
     }
     scene_id = state["current_scene"]
     if scene_id not in builders:
@@ -39,6 +41,9 @@ def get_scene_signature(state: dict[str, Any]) -> str:
         "known_npcs": state["known_npcs"],
         "flags": state["active_flags"],
         "last_outcome": state["last_outcome"],
+        "game_over": state.get("game_over"),
+        "ending_type": state.get("ending_type"),
+        "cash_goal": state.get("cash_goal"),
     }
     return json.dumps(fingerprint, sort_keys=True)
 
@@ -96,7 +101,7 @@ The bad news? The world kept moving.
 The worse news? You don't really have family coming to save you, no close friends on file, and your life is currently being held together by a discharge packet, a motel voucher, and my extremely professional guidance. 
 The decent news? Your grandmother left you $1,450. Also a terrible 2001 Volvo, which the city is currently holding hostage for $500.
 
-Las Playas has changed a lot since you've been gone. The streets are rougher, the people are more desperate, and crime is on the rise. If you want to rebuild something real here, you are going to need food, sleep, transport, cash, and better judgment than this city usually rewards. That is the situation. You are waking up after fifteen lost years with a little money, a bad car, almost no support, and one actual chance to decide what kind of life you build next.
+Las Playas has changed a lot since you've been gone. The streets are rougher, the people are more desperate, and crime is on the rise. If you want to rebuild something real here, you are going to need food, sleep, transport, cash, and better judgment than this city usually rewards. The state has a very official phrase for being "on your own," and because bureaucracy loves a number, Tom's target for you is $100,000 in your account. Get there, and nobody gets to call you a recovery case anymore. That is the situation. You are waking up after fifteen lost years with a little money, a bad car, almost no support, and one actual chance to decide what kind of life you build next.
 
 So let's decide what to do first.
 """.strip()
@@ -213,6 +218,33 @@ You made it out into Las Playas. {vehicle_line}
     }
 
 
+def build_financial_independence_ending(state: dict[str, Any]) -> dict[str, Any]:
+    alignment = get_tom_alignment(state)
+
+    if alignment == "steady":
+        narration = f"""
+Look at that account balance, {state["name"]}. One hundred thousand dollars. The state can call it financial independence, the forms can call it a successful recovery outcome, and I can call it what it is: you becoming a good citizen in a city that did not make that easy.
+
+I am proud of you. Really proud. You woke up with almost nothing but a hospital bracelet, a bad car, and me talking too much, and you built enough stability to stand on your own. This is where I say goodbye as your assigned support specialist. As your friend, I am still rooting for you.
+""".strip()
+        title = "Tom's Proud Goodbye"
+    else:
+        narration = f"""
+Well. This is not exactly the path I would have planned for you, {state["name"]}, and I am choosing my words carefully because I know you can see my face right now.
+
+But you got one hundred thousand dollars in your account, my friend. That was the line Tom, the state, and all the paperwork treated as proof that you could be on your own. So this is where I say goodbye. You got this. Just try to stay alive, enjoy the life you fought your way back into, and maybe do not make me regret believing in you.
+""".strip()
+        title = "Tom Lets You Go"
+
+    return {
+        "id": "financial_independence_ending",
+        "kicker": "Financial Independence",
+        "title": title,
+        "narration": narration,
+        "options": [],
+    }
+
+
 def apply_choice(state: dict[str, Any], choice_id: str) -> None:
     handlers = {
         "review_discharge_plan": handle_review_discharge_plan,
@@ -235,6 +267,26 @@ def apply_choice(state: dict[str, Any], choice_id: str) -> None:
     handlers[choice_id](state)
     state["turn_count"] += 1
     normalize_state(state)
+    maybe_finish_game(state)
+
+
+def maybe_finish_game(state: dict[str, Any]) -> None:
+    if state.get("game_over"):
+        return
+
+    goal = int(state.get("cash_goal", FINANCIAL_INDEPENDENCE_GOAL))
+    if state["cash"] < goal:
+        return
+
+    alignment = get_tom_alignment(state)
+    state["game_over"] = True
+    state["ending_type"] = "good_citizen" if alignment == "steady" else "unexpected_independence"
+    state["current_scene"] = "financial_independence_ending"
+    state["current_phase"] = "ending"
+    add_event(state["major_events"], f"Reached ${goal:,} and earned financial independence.")
+    state["last_outcome"] = (
+        f"You reached ${goal:,}. Tom's official job is done, and your life is finally yours to keep."
+    )
 
 
 def handle_review_discharge_plan(state: dict[str, Any]) -> None:

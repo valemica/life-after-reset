@@ -19,6 +19,8 @@ STARTING_INVENTORY = [
     "basic clothes",
 ]
 
+FINANCIAL_INDEPENDENCE_GOAL = 100_000
+
 
 def clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
@@ -45,6 +47,9 @@ def create_player_state(name: str) -> dict[str, Any]:
         "name": name,
         "age": 28,
         "cash": 1450,
+        "cash_goal": FINANCIAL_INDEPENDENCE_GOAL,
+        "game_over": False,
+        "ending_type": None,
         "health": 85,
         "energy": 70,
         "hunger": 30,
@@ -97,6 +102,10 @@ def create_player_state(name: str) -> dict[str, Any]:
 
 
 def normalize_state(state: dict[str, Any]) -> None:
+    state.setdefault("cash_goal", FINANCIAL_INDEPENDENCE_GOAL)
+    state.setdefault("game_over", False)
+    state.setdefault("ending_type", None)
+
     state["cash"] = max(0, int(state["cash"]))
     state["health"] = clamp(int(state["health"]), 0, 100)
     state["energy"] = clamp(int(state["energy"]), 0, 100)
@@ -122,7 +131,9 @@ def save_game(state: dict[str, Any]) -> Path:
 
 
 def get_progress_snapshot(state: dict[str, Any]) -> dict[str, str]:
+    normalize_state(state)
     job_text = state["job"] or state["job_lead"] or "Unemployed"
+    goal_progress = min(100, round((state["cash"] / state["cash_goal"]) * 100))
     vehicle_status = state["vehicle"]["status"]
     if state["active_flags"]["car_recovered"]:
         vehicle_text = f"{state['vehicle']['name']} ({vehicle_status}, {state['vehicle']['fuel']} fuel)"
@@ -132,6 +143,7 @@ def get_progress_snapshot(state: dict[str, Any]) -> dict[str, str]:
     return {
         "day": str(state["day_count"]),
         "cash": f"${state['cash']}",
+        "goal_progress": f"{goal_progress}%",
         "health": str(state["health"]),
         "energy": str(state["energy"]),
         "hunger": str(state["hunger"]),

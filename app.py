@@ -441,7 +441,6 @@ def bootstrap_session() -> None:
     defaults = {
         "game_active": False,
         "player_state": None,
-        "show_inventory": False,
         "save_message": "",
         "quit_message": "",
         "rendered_narration": "",
@@ -482,7 +481,6 @@ def format_narration_html(value: str) -> str:
 def start_new_game(name: str) -> None:
     st.session_state.player_state = create_player_state(name)
     st.session_state.game_active = True
-    st.session_state.show_inventory = False
     st.session_state.save_message = ""
     st.session_state.quit_message = ""
     clear_render_cache()
@@ -542,9 +540,6 @@ def render_sidebar(player_state: dict) -> None:
     job = escape_copy(progress["job"])
 
     with st.sidebar:
-        if st.button("Inventory", use_container_width=True):
-            st.session_state.show_inventory = not st.session_state.show_inventory
-
         if st.button("Save Game", use_container_width=True):
             save_path = save_game(player_state)
             st.session_state.save_message = f"Manual save written to {save_path.name}"
@@ -556,7 +551,6 @@ def render_sidebar(player_state: dict) -> None:
             )
             st.session_state.game_active = False
             st.session_state.player_state = None
-            st.session_state.show_inventory = False
             clear_render_cache()
             st.rerun()
 
@@ -569,11 +563,11 @@ def render_sidebar(player_state: dict) -> None:
 
         middle_row = st.columns(2)
         middle_row[0].metric("Health", progress["health"])
-        middle_row[1].metric("Energy", progress["energy"])
+        middle_row[1].metric("To $100,000", progress["goal_progress"])
 
         bottom_row = st.columns(2)
         bottom_row[0].metric("Hunger", progress["hunger"])
-        bottom_row[1].metric("Stress", str(player_state["stress"]))
+        bottom_row[1].metric("Energy", progress["energy"])
 
         st.markdown(
             f"""
@@ -589,8 +583,7 @@ def render_sidebar(player_state: dict) -> None:
             unsafe_allow_html=True,
         )
 
-        if st.session_state.show_inventory:
-            render_inventory(player_state)
+        render_inventory(player_state)
 
 
 def render_inventory(player_state: dict) -> None:
@@ -650,6 +643,17 @@ def render_scene(player_state: dict) -> None:
         )
 
     options = scene["options"]
+    if player_state.get("game_over"):
+        st.markdown(
+            """
+            <div class="free-hint">
+                This run is complete. Use Quit Game when you are ready to return to the start screen.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
     if len(options) != 4:
         st.error("Each turn must present exactly four choices.")
         return
