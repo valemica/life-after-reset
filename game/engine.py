@@ -26,25 +26,77 @@ def get_scene_signature(state: dict[str, Any]) -> str:
         "health": state["health"],
         "energy": state["energy"],
         "hunger": state["hunger"],
+        "stress": state["stress"],
+        "morality": state["morality"],
+        "police_heat": state["police_heat"],
+        "reputation": state["reputation"],
         "housing": state["housing"],
         "job": state["job"],
         "job_lead": state["job_lead"],
         "vehicle": state["vehicle"],
+        "criminal_history": state["criminal_history"],
+        "lawful_history": state["lawful_history"],
+        "known_npcs": state["known_npcs"],
         "flags": state["active_flags"],
         "last_outcome": state["last_outcome"],
     }
     return json.dumps(fingerprint, sort_keys=True)
 
 
+def get_tom_alignment(state: dict[str, Any]) -> str:
+    lawful_moves = len(state["lawful_history"])
+    criminal_moves = len(state["criminal_history"])
+
+    if state["morality"] <= -2 or criminal_moves > lawful_moves:
+        return "shady"
+    if state["morality"] >= 2 or lawful_moves > criminal_moves:
+        return "steady"
+    return "mixed"
+
+
+def get_tom_scene_lines(state: dict[str, Any]) -> tuple[str, str]:
+    alignment = get_tom_alignment(state)
+
+    if alignment == "shady":
+        support_line = (
+            "I get the appeal of fast money in a city like this. I am not going to keep giving you the same lecture, "
+            "but I do need to say this once: if you go that way, the fallout can land on both of us."
+        )
+        next_step_line = (
+            "If I cannot talk you out of every bad shortcut, then fine, I am still staying in your corner as your friend. "
+            "Just let me help you keep your eyes open about what this could cost."
+        )
+        return support_line, next_step_line
+
+    if alignment == "steady":
+        support_line = (
+            "I have to say, watching you lean toward the solid path makes me ridiculously proud. "
+            "You are my first client, and somehow you are already making me feel competent."
+        )
+        next_step_line = (
+            "Keep stacking choices like this and you are going to turn into the kind of comeback story I brag about for years."
+        )
+        return support_line, next_step_line
+
+    support_line = (
+        "You are still close enough to either future that I am not making speeches yet. "
+        "What matters is that the next move leaves you steadier, safer, and a little harder for this city to knock over."
+    )
+    next_step_line = (
+        "I am here as your coach, your witness, and increasingly the guy who is way too invested in whether you pull this off."
+    )
+    return support_line, next_step_line
+
+
 def build_hospital_intro(state: dict[str, Any]) -> dict[str, Any]:
     narration = f"""
-Hey. Easy, {state["name"]}. Don't try to sit up too fast unless your goal is to immediately pass out and embarrass both of us. My name's Tom, and I'm your recovery support specialist. Technically life coach, which sounds fake, but apparently the state spent real tax dollars on me, so here we are. You're in Las Playas General Hospital, and you've been in a coma for fifteen years. You're twenty-eight now. 
+Hey. Easy, {state["name"]}. Do not try to sit up too fast unless your plan is to pass out and make this introduction needlessly dramatic. My name's Tom. I am your recovery support specialist, which is the state's painfully official way of saying I am the guy helping you build a life again. You're in Las Playas General Hospital, and you've been in a coma for fifteen years. You're twenty-eight now. 
 
 The bad news? The world kept moving.
 The worse news? You don't really have family coming to save you, no close friends on file, and your life is currently being held together by a discharge packet, a motel voucher, and my extremely professional guidance. 
 The decent news? Your grandmother left you $1,450. Also a terrible 2001 Volvo, which the city is currently holding hostage for $500.
 
-Las Playas has changed a lot since you've been gone. The streets are rougher, the people are more desperate, and crime is on the rise. If you want to make something of yourself, you're going to need to be smart about it. You've got energy, hunger, health, and cash - now it's time to decide how to use them. That is the situation. You're waking up after fifteen lost years with a little money, a bad car, almost no support, and a city that will absolutely reward good decisions or punish bad ones.
+Las Playas has changed a lot since you've been gone. The streets are rougher, the people are more desperate, and crime is on the rise. If you want to rebuild something real here, you are going to need food, sleep, transport, cash, and better judgment than this city usually rewards. That is the situation. You are waking up after fifteen lost years with a little money, a bad car, almost no support, and one actual chance to decide what kind of life you build next.
 
 So let's decide what to do first.
 """.strip()
@@ -66,6 +118,8 @@ So let's decide what to do first.
 def build_discharge_hub(state: dict[str, Any]) -> dict[str, Any]:
     opener_parts = []
     flags = state["active_flags"]
+    support_line, next_step_line = get_tom_scene_lines(state)
+    alignment = get_tom_alignment(state)
 
     if flags["reviewed_plan"]:
         opener_parts.append(
@@ -80,15 +134,22 @@ def build_discharge_hub(state: dict[str, Any]) -> dict[str, Any]:
             "The impound clerk confirmed the Volvo exists, which is not the comforting sentence it sounds like."
         )
     if flags["quick_cash_contact"]:
-        opener_parts.append(
-            "That folded flyer in your pocket still looks like the kind of number I am absolutely going to call a terrible idea."
-        )
+        if alignment == "shady":
+            opener_parts.append(
+                "That folded flyer in your pocket still looks like the kind of shortcut that pays fast and asks questions later, and I can tell you feel the pull."
+            )
+        else:
+            opener_parts.append(
+                "That folded flyer in your pocket still looks like the kind of number I would love to keep in the category of bad idea instead of active plan."
+            )
 
     opener = " ".join(opener_parts) or "The room has gone quiet in the way hospitals do when the paperwork starts winning."
     narration = f"""
 {opener}
 
-All right. You're being discharged into a city that will not slow down for you, so whatever happens next needs to help with food, shelter, transport, or cash flow. Preferably more than one of those if we can manage it without setting anything on fire.
+{support_line}
+
+All right. You are being discharged into a city that will not slow down for you, so whatever happens next needs to help with food, shelter, transport, or cash flow. Preferably more than one of those if we can manage it without setting anything on fire. {next_step_line}
 """.strip()
 
     return {
@@ -106,6 +167,8 @@ All right. You're being discharged into a city that will not slow down for you, 
 
 
 def build_street_hub(state: dict[str, Any]) -> dict[str, Any]:
+    support_line, next_step_line = get_tom_scene_lines(state)
+
     if state["active_flags"]["car_recovered"]:
         vehicle_line = "Good news. I saw you got your Volvo back. I am using the word 'good' generously, but it does mean you have wheels."
     else:
@@ -118,9 +181,8 @@ def build_street_hub(state: dict[str, Any]) -> dict[str, Any]:
         else "You still do not have a stable job lead, which I would prefer we fix before Las Playas gets any ideas."
     )
 
-    tom_read = "steady yourself and play this straight" if state["morality"] >= 0 else "stop pretending the shady route is harmless"
     pressure_line = (
-        "Also, that patrol car drifting by is a useful reminder that bad choices get expensive very quickly around here."
+        "And that patrol car drifting by is a useful reminder that trouble is already close enough to smell."
         if state["police_heat"] > 0
         else "For the moment, nobody in this city is watching you too closely, and I would love to keep it that way."
     )
@@ -130,7 +192,7 @@ You made it out into Las Playas. {vehicle_line}
 
 {housing_line} {lead_line}
 
-Try to {tom_read}. {pressure_line}
+{support_line} {next_step_line} {pressure_line}
 """.strip()
 
     transport_label = "Put gas in the Volvo and keep moving" if state["active_flags"]["car_recovered"] else "Pay to recover the Volvo now"

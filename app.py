@@ -365,20 +365,20 @@ def inject_styles() -> None:
             }
 
             div[data-testid="stMetricLabel"] {
-                color: var(--accent) !important;
+                color: var(--text-bright) !important;
                 opacity: 1 !important;
             }
 
             div[data-testid="stMetricLabel"] p {
-                color: var(--accent) !important;
-                -webkit-text-fill-color: var(--accent) !important;
+                color: var(--text-bright) !important;
+                -webkit-text-fill-color: var(--text-bright) !important;
             }
 
             div[data-testid="stMetricLabel"] * {
-                color: var(--accent) !important;
-                fill: var(--accent) !important;
-                stroke: var(--accent) !important;
-                -webkit-text-fill-color: var(--accent) !important;
+                color: var(--text-bright) !important;
+                fill: var(--text-bright) !important;
+                stroke: var(--text-bright) !important;
+                -webkit-text-fill-color: var(--text-bright) !important;
                 opacity: 1 !important;
             }
 
