@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from game.state import FINANCIAL_INDEPENDENCE_GOAL, add_event, add_unique_item, normalize_state
+from ai.scene_generation import build_ai_scene
+from game.state import (
+    FINANCIAL_INDEPENDENCE_GOAL,
+    add_event,
+    add_unique_item,
+    normalize_state,
+    remember_tom_line,
+)
 
 
 def get_scene(state: dict[str, Any]) -> dict[str, Any]:
@@ -17,7 +24,10 @@ def get_scene(state: dict[str, Any]) -> dict[str, Any]:
     scene_id = state["current_scene"]
     if scene_id not in builders:
         raise ValueError(f"Unknown scene: {scene_id}")
-    return builders[scene_id](state)
+    scene = builders[scene_id](state)
+    if scene_id in {"discharge_hub", "street_hub"}:
+        return get_or_create_dynamic_scene(state, scene)
+    return scene
 
 
 def get_scene_signature(state: dict[str, Any]) -> str:
@@ -41,9 +51,42 @@ def get_scene_signature(state: dict[str, Any]) -> str:
         "known_npcs": state["known_npcs"],
         "flags": state["active_flags"],
         "last_outcome": state["last_outcome"],
+        "last_choice_label": state.get("last_choice_label"),
+        "last_choice_type": state.get("last_choice_type"),
+        "legal_level": state.get("legal_level"),
+        "shady_level": state.get("shady_level"),
+        "tom_memory": state.get("tom_memory"),
         "game_over": state.get("game_over"),
         "ending_type": state.get("ending_type"),
         "cash_goal": state.get("cash_goal"),
+        "dynamic_scene": state.get("dynamic_scene"),
+    }
+    return json.dumps(fingerprint, sort_keys=True)
+
+
+def get_dynamic_scene_signature(state: dict[str, Any]) -> str:
+    fingerprint = {
+        "scene": state["current_scene"],
+        "day_count": state["day_count"],
+        "turn_count": state["turn_count"],
+        "cash": state["cash"],
+        "health": state["health"],
+        "energy": state["energy"],
+        "hunger": state["hunger"],
+        "stress": state["stress"],
+        "morality": state["morality"],
+        "police_heat": state["police_heat"],
+        "reputation": state["reputation"],
+        "housing": state["housing"],
+        "job": state["job"],
+        "job_lead": state["job_lead"],
+        "vehicle": state["vehicle"],
+        "inventory": state["inventory"],
+        "criminal_history": state["criminal_history"],
+        "lawful_history": state["lawful_history"],
+        "major_events": state["major_events"],
+        "flags": state["active_flags"],
+        "last_outcome": state["last_outcome"],
     }
     return json.dumps(fingerprint, sort_keys=True)
 
@@ -218,6 +261,28 @@ You made it out into Las Playas. {vehicle_line}
     }
 
 
+def get_or_create_dynamic_scene(state: dict[str, Any], fallback_scene: dict[str, Any]) -> dict[str, Any]:
+    signature = get_dynamic_scene_signature(state)
+    cached_scene = state.get("dynamic_scene")
+    if cached_scene and cached_scene.get("signature") == signature:
+        return cached_scene["scene"]
+
+    generated_scene = build_ai_scene(state, fallback_scene["narration"])
+    scene = {
+        "id": fallback_scene["id"],
+        "kicker": generated_scene["kicker"],
+        "title": generated_scene["title"],
+        "narration": generated_scene["narration"],
+        "options": generated_scene["options"],
+        "ai_generated": generated_scene.get("ai_generated", False),
+    }
+    state["dynamic_scene"] = {
+        "signature": signature,
+        "scene": scene,
+    }
+    return scene
+
+
 def build_financial_independence_ending(state: dict[str, Any]) -> dict[str, Any]:
     alignment = get_tom_alignment(state)
 
@@ -246,6 +311,14 @@ But you got one hundred thousand dollars in your account, my friend. That was th
 
 
 def apply_choice(state: dict[str, Any], choice_id: str) -> None:
+    if choice_id.startswith("ai_choice_"):
+        handle_dynamic_choice(state, choice_id)
+        state["turn_count"] += 1
+        normalize_state(state)
+        state["dynamic_scene"] = None
+        maybe_finish_game(state)
+        return
+
     handlers = {
         "review_discharge_plan": handle_review_discharge_plan,
         "ask_for_support": handle_ask_for_support,
@@ -267,7 +340,253 @@ def apply_choice(state: dict[str, Any], choice_id: str) -> None:
     handlers[choice_id](state)
     state["turn_count"] += 1
     normalize_state(state)
+    state["dynamic_scene"] = None
     maybe_finish_game(state)
+
+
+def handle_dynamic_choice(state: dict[str, Any], choice_id: str) -> None:
+    cached_scene = state.get("dynamic_scene", {}).get("scene", {})
+    selected_option = next(
+        (option for option in cached_scene.get("options", []) if option.get("id") == choice_id),
+        None,
+    )
+    if not selected_option:
+        raise ValueError(f"Unsupported dynamic choice: {choice_id}")
+
+    action_type = selected_option["action_type"]
+    label = selected_option["label"]
+    remember_dynamic_scene(state, cached_scene, selected_option)
+    state["last_choice_label"] = label
+    state["last_choice_type"] = action_type
+    state["current_scene"] = "street_hub"
+    state["current_phase"] = "survival"
+
+    dynamic_handlers = {
+        "legal_work": apply_legal_work_choice,
+        "food": apply_food_choice,
+        "housing": apply_housing_choice,
+        "transport": apply_transport_choice,
+        "rest": apply_rest_choice,
+        "social_support": apply_social_support_choice,
+        "quick_cash": apply_quick_cash_choice,
+        "street_information": apply_street_information_choice,
+        "medical_followup": apply_medical_followup_choice,
+        "budget_plan": apply_budget_plan_choice,
+    }
+    dynamic_handlers[action_type](state, label)
+
+
+def remember_dynamic_scene(state: dict[str, Any], scene: dict[str, Any], selected_option: dict[str, Any]) -> None:
+    if not scene:
+        return
+
+    remember_tom_line(
+        state,
+        {
+            "day": state["day_count"],
+            "title": scene.get("title", ""),
+            "narration": scene.get("narration", ""),
+            "chosen_label": selected_option.get("label", ""),
+            "chosen_type": selected_option.get("action_type", ""),
+        },
+    )
+
+
+def apply_legal_work_choice(state: dict[str, Any], label: str) -> None:
+    legal_titles = [
+        "entry-level shift screening this week",
+        "warehouse temp shift",
+        "reliable shift lead track",
+        "assistant supervisor training",
+        "operations supervisor role",
+        "small logistics contract",
+    ]
+    legal_payouts = [0, 120, 350, 900, 1800, 3200]
+
+    state["day_count"] += 1
+    state["energy"] -= 10
+    state["hunger"] += 8
+
+    if state.get("job_lead") or state["active_flags"].get("job_center_visited"):
+        state["legal_level"] = min(int(state.get("legal_level", 0)) + 1, len(legal_payouts) - 1)
+        payout = legal_payouts[state["legal_level"]]
+        state["job"] = legal_titles[state["legal_level"]]
+        next_level = min(state["legal_level"] + 1, len(legal_titles) - 1)
+        state["job_lead"] = legal_titles[next_level] if next_level > state["legal_level"] else None
+        state["cash"] += payout
+        state["reputation"] += 2
+        state["morality"] += 1
+        state["active_flags"]["worked_shift"] = True
+        add_event(state["lawful_history"], f"Followed through on legal work: {label}.")
+        add_event(state["major_events"], f"Moved up legally into {state['job']} and earned ${payout}.")
+        state["last_outcome"] = (
+            f"You keep the legal route alive, move into {state['job']}, and add ${payout} of clean money to the account."
+        )
+        return
+
+    state["legal_level"] = max(int(state.get("legal_level", 0)), 0)
+    state["job_lead"] = legal_titles[0]
+    state["active_flags"]["job_center_visited"] = True
+    state["morality"] += 1
+    state["stress"] -= 3
+    add_unique_item(state["inventory"], "fresh job lead")
+    add_event(state["lawful_history"], f"Chased a legitimate work lead: {label}.")
+    add_event(state["major_events"], "Found a realistic lead for legal work.")
+    state["last_outcome"] = "It is not a paycheck yet, but it is a real lead with a place, a time, and a reason to show up."
+
+
+def apply_food_choice(state: dict[str, Any], label: str) -> None:
+    state["day_count"] += 1
+    cost = 14 if state["cash"] >= 14 else 0
+    state["cash"] -= cost
+    state["hunger"] -= 28 if cost else -6
+    state["energy"] += 6 if cost else -2
+    state["stress"] -= 2 if cost else -3
+    add_event(state["major_events"], f"Handled food: {label}.")
+    if cost:
+        state["last_outcome"] = "The meal is simple, hot, and worth every dollar because your hands stop shaking afterward."
+    else:
+        state["last_outcome"] = "You try to solve hunger without spending money, but the city is not generous about empty pockets."
+
+
+def apply_housing_choice(state: dict[str, Any], label: str) -> None:
+    state["day_count"] += 1
+    if state["active_flags"].get("has_voucher"):
+        state["housing"] = "motel room on Grand Avenue"
+        state["active_flags"]["checked_into_motel"] = True
+        state["stress"] -= 10
+        state["energy"] += 5
+        add_unique_item(state["inventory"], "motel room key")
+        add_event(state["lawful_history"], f"Secured stable shelter: {label}.")
+        add_event(state["major_events"], "Turned support paperwork into a place to sleep.")
+        state["last_outcome"] = "You end the day with a locked door, which suddenly feels like a major life achievement."
+        return
+
+    state["housing"] = "temporary shelter lead"
+    state["active_flags"]["has_voucher"] = True
+    state["stress"] -= 5
+    add_unique_item(state["inventory"], "housing intake slip")
+    add_event(state["lawful_history"], f"Asked for housing support: {label}.")
+    add_event(state["major_events"], "Got a concrete lead for temporary housing.")
+    state["last_outcome"] = "The paperwork is annoying, but it creates a real path toward a bed instead of a sidewalk."
+
+
+def apply_transport_choice(state: dict[str, Any], label: str) -> None:
+    state["day_count"] += 1
+    if not state["active_flags"].get("car_recovered"):
+        if state["cash"] >= state["vehicle"]["recovery_cost"]:
+            state["cash"] -= state["vehicle"]["recovery_cost"]
+            state["vehicle"]["status"] = "recovered"
+            state["active_flags"]["car_recovered"] = True
+            state["stress"] -= 4
+            add_unique_item(state["inventory"], "Volvo keys")
+            add_event(state["lawful_history"], f"Recovered transportation: {label}.")
+            add_event(state["major_events"], "Recovered the 2001 Volvo from impound.")
+            state["last_outcome"] = "The Volvo is yours again, and somehow that exhausted car feels like possibility."
+            return
+
+        state["active_flags"]["called_impound_lot"] = True
+        state["stress"] += 2
+        add_unique_item(state["inventory"], "impound release form")
+        add_event(state["major_events"], f"Checked on transportation: {label}.")
+        state["last_outcome"] = "You confirm what it will take to get the Volvo back, even if the price still stings."
+        return
+
+    if state["cash"] >= 8:
+        state["cash"] -= 8
+        state["vehicle"]["fuel"] += 18
+        state["energy"] += 2
+        add_event(state["major_events"], f"Kept transportation usable: {label}.")
+        state["last_outcome"] = "A little fuel buys enough range to make tomorrow feel less trapped."
+    else:
+        state["stress"] += 3
+        state["last_outcome"] = "The Volvo is technically yours, but without gas it is mostly a very large reminder."
+
+
+def apply_rest_choice(state: dict[str, Any], label: str) -> None:
+    state["day_count"] += 1
+    state["energy"] += 18
+    state["hunger"] += 5
+    state["stress"] -= 8
+    state["health"] += 4
+    add_event(state["major_events"], f"Chose recovery over motion: {label}.")
+    state["last_outcome"] = "Rest does not make you richer, but it brings your body back into the conversation."
+
+
+def apply_social_support_choice(state: dict[str, Any], label: str) -> None:
+    state["day_count"] += 1
+    state["stress"] -= 7
+    state["reputation"] += 1
+    state["known_npcs"]["Tom"]["trust"] += 1
+    state["active_flags"]["has_voucher"] = True
+    add_unique_item(state["inventory"], "support services contact")
+    add_event(state["lawful_history"], f"Accepted practical support: {label}.")
+    add_event(state["major_events"], "Used support services instead of trying to white-knuckle everything.")
+    state["last_outcome"] = "Asking for help is humiliating for about thirty seconds, then useful for the rest of the day."
+
+
+def apply_quick_cash_choice(state: dict[str, Any], label: str) -> None:
+    shady_titles = [
+        "easy-money callback",
+        "cash handoff runner",
+        "package route regular",
+        "crew dispatcher",
+        "high-risk stash movement",
+        "five-grand criminal score",
+    ]
+    shady_payouts = [140, 350, 900, 1800, 3200, 5000]
+
+    if not state["active_flags"].get("quick_cash_contact"):
+        state["active_flags"]["quick_cash_contact"] = True
+        add_unique_item(state["inventory"], "easy-money contact")
+
+    state["day_count"] += 1
+    current_level = min(int(state.get("shady_level", 0)), len(shady_payouts) - 1)
+    payout = shady_payouts[current_level]
+    state["shady_level"] = min(current_level + 1, len(shady_payouts) - 1)
+    state["cash"] += payout
+    state["stress"] += 8 + state["shady_level"]
+    state["morality"] -= 2
+    state["police_heat"] += 1 + state["shady_level"]
+    state["hunger"] += 5
+    state["job"] = shady_titles[current_level]
+    add_event(state["criminal_history"], f"Used the easy-money contact: {label}.")
+    add_event(state["major_events"], f"Made ${payout} through {state['job']}.")
+    state["last_outcome"] = (
+        f"The shady route pays ${payout} fast, but {state['job']} puts more attention on you than Tom likes."
+    )
+
+
+def apply_street_information_choice(state: dict[str, Any], label: str) -> None:
+    state["day_count"] += 1
+    state["energy"] -= 4
+    state["stress"] -= 1
+    state["reputation"] += 1
+    add_unique_item(state["inventory"], "local information")
+    add_event(state["major_events"], f"Gathered useful local information: {label}.")
+    state["last_outcome"] = "You learn just enough about the neighborhood to make the next decision less blind."
+
+
+def apply_medical_followup_choice(state: dict[str, Any], label: str) -> None:
+    state["day_count"] += 1
+    state["health"] += 10
+    state["energy"] -= 3
+    state["stress"] -= 5
+    add_unique_item(state["inventory"], "clinic follow-up card")
+    add_event(state["lawful_history"], f"Protected recovery health: {label}.")
+    add_event(state["major_events"], "Kept up with medical follow-up after the coma.")
+    state["last_outcome"] = "The appointment is tedious, but your body gets checked before it can quietly become a crisis."
+
+
+def apply_budget_plan_choice(state: dict[str, Any], label: str) -> None:
+    state["day_count"] += 1
+    state["stress"] -= 6
+    state["morality"] += 1
+    state["known_npcs"]["Tom"]["trust"] += 1
+    add_unique_item(state["inventory"], "rough budget plan")
+    add_event(state["lawful_history"], f"Made a practical money plan: {label}.")
+    add_event(state["major_events"], "Mapped the next stretch of money against the $100,000 goal.")
+    state["last_outcome"] = "No money appears by magic, but the account stops feeling like a mystery with teeth."
 
 
 def maybe_finish_game(state: dict[str, Any]) -> None:

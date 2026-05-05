@@ -604,10 +604,14 @@ def render_scene(player_state: dict) -> None:
     signature = f"{get_scene_signature(player_state)}::{NARRATION_STYLE_VERSION}"
 
     if signature != st.session_state.rendered_signature:
-        narration, status = get_narration(
-            base_narration=scene["narration"],
-            state=player_state,
-        )
+        if scene.get("ai_generated") is not None:
+            narration = scene["narration"]
+            status = "AI scene generator" if scene.get("ai_generated") else "Grounded fallback scene"
+        else:
+            narration, status = get_narration(
+                base_narration=scene["narration"],
+                state=player_state,
+            )
         st.session_state.rendered_narration = narration
         st.session_state.rendered_signature = signature
         st.session_state.narration_status = status

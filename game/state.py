@@ -42,6 +42,13 @@ def add_event(history: list[str], event: str) -> None:
         del history[0]
 
 
+def remember_tom_line(state: dict[str, Any], memory: dict[str, Any]) -> None:
+    memories = state.setdefault("tom_memory", [])
+    memories.append(memory)
+    if len(memories) > 6:
+        del memories[0]
+
+
 def create_player_state(name: str) -> dict[str, Any]:
     return {
         "name": name,
@@ -50,6 +57,12 @@ def create_player_state(name: str) -> dict[str, Any]:
         "cash_goal": FINANCIAL_INDEPENDENCE_GOAL,
         "game_over": False,
         "ending_type": None,
+        "dynamic_scene": None,
+        "tom_memory": [],
+        "last_choice_label": "",
+        "last_choice_type": "",
+        "legal_level": 0,
+        "shady_level": 0,
         "health": 85,
         "energy": 70,
         "hunger": 30,
@@ -105,6 +118,12 @@ def normalize_state(state: dict[str, Any]) -> None:
     state.setdefault("cash_goal", FINANCIAL_INDEPENDENCE_GOAL)
     state.setdefault("game_over", False)
     state.setdefault("ending_type", None)
+    state.setdefault("dynamic_scene", None)
+    state.setdefault("tom_memory", [])
+    state.setdefault("last_choice_label", "")
+    state.setdefault("last_choice_type", "")
+    state.setdefault("legal_level", 0)
+    state.setdefault("shady_level", 0)
 
     state["cash"] = max(0, int(state["cash"]))
     state["health"] = clamp(int(state["health"]), 0, 100)

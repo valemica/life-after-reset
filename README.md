@@ -6,7 +6,8 @@ AI-powered life simulation game built with Python, Streamlit, and Ollama.
 You wake up after a fifteen-year coma and have to rebuild your life in Las Playas with almost no support system. Tom, a slightly sarcastic but supportive recovery specialist, guides the player through high-impact choices while hidden morality and police heat shift quietly in the background.
 
 ## Features
-- Choice-based gameplay (4 options every turn)
+- AI-generated post-hospital scenes with grounded choices
+- Tom memory, legal promotions, and escalating shady-money paths
 - Hidden law vs crime system
 - Police heat and consequences
 - Inventory and survival mechanics
