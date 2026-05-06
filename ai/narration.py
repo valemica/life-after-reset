@@ -42,6 +42,10 @@ def sanitize_narration_text(text: str) -> str:
     return "\n".join(cleaned_lines).strip()
 
 
+def mentions_tom_in_third_person(text: str) -> bool:
+    return bool(re.search(r"\bTom(?:'s)?\b", text, flags=re.IGNORECASE))
+
+
 def summarize_history(history: list[str], limit: int = 3) -> str:
     recent_items = [item.strip() for item in history[-limit:] if item.strip()]
     return " | ".join(recent_items) if recent_items else "None"
@@ -128,8 +132,7 @@ def get_narration(base_narration: str, state: dict[str, Any]) -> tuple[str, str]
         Day: {state["day_count"]}
         Money on hand: {state["cash"]}
         Physical health: {state["health"]}
-        Energy: {state["energy"]}
-        Hunger: {state["hunger"]}
+        Hunger/fed meter: {state["hunger"]} out of 100. 0 means hospital emergency; 10 or below means Tom should tell them to eat.
         Stress: {state["stress"]}
         Police attention: {state["police_heat"]}
         Morality read: {state["morality"]}
@@ -161,7 +164,7 @@ def get_narration(base_narration: str, state: dict[str, Any]) -> tuple[str, str]
             ],
         )
         content = sanitize_narration_text(response["message"]["content"])
-        if content:
+        if content and not mentions_tom_in_third_person(content):
             return content, f"Ollama ({DEFAULT_MODEL})"
     except Exception:
         return sanitize_narration_text(base_narration), "Scripted fallback (Ollama unavailable)"
