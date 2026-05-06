@@ -484,27 +484,39 @@ def select_weighted_options(
     first_option = turn_variant % len(option_specs)
     rotated_options = option_specs[first_option:] + option_specs[:first_option]
     if path_focus == "mixed":
-        return rotated_options[:4]
-
+        seen: set[str] = set()
+        deduped: list[tuple[str, str, str, str]] = []
+        for spec in rotated_options:
+            if spec[0].lower() not in seen:
+                seen.add(spec[0].lower())
+                deduped.append(spec)
+            if len(deduped) >= 4:
+                break
+        return deduped
+ 
     path_type = "quick_cash" if path_focus == "criminal" else "legal_work"
     path_level = int(state.get("shady_level" if path_focus == "criminal" else "legal_level", 0))
     desired_path_count = min(3, 2 + max(0, path_level // 3))
     path_options = [spec for spec in rotated_options if spec[1] == path_type]
     other_options = [spec for spec in rotated_options if spec[1] != path_type]
-
+ 
     selected: list[tuple[str, str, str, str]] = []
+    seen_labels: set[str] = set()
+ 
     for spec in path_options:
-        if spec not in selected:
+        if spec[0].lower() not in seen_labels:
+            seen_labels.add(spec[0].lower())
             selected.append(spec)
         if len(selected) >= desired_path_count:
             break
-
+ 
     for spec in other_options + path_options:
-        if spec not in selected:
+        if spec[0].lower() not in seen_labels:
+            seen_labels.add(spec[0].lower())
             selected.append(spec)
         if len(selected) >= 4:
             break
-
+ 
     return selected[:4]
 
 
