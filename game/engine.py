@@ -513,13 +513,14 @@ def get_arrest_threshold(state: dict[str, Any], level: int) -> int:
     return max(10, 22 - min(max(level, 0), 5) - arrest_count)
 
 
-def resolve_police_attention(state: dict[str, Any], crime_level: int, payout: int) -> str:
+def resolve_police_attention(state: dict[str, Any], crime_level: int, payout: int) -> tuple[str, bool]:
+    """Returns (narrative_line, arrested). Payout is passed for context only; caller decides whether to apply it"""
     threshold = get_arrest_threshold(state, crime_level)
     if int(state.get("police_heat", 0)) < threshold:
         return (
             f" Police heat is at {state['police_heat']} now. That is not jail yet, "
             "but it is the city writing your name in pencil."
-        )
+        ), False
 
     release_fee = normalize_money(state["cash"] * JAIL_RELEASE_RATE)
     state["cash"] = normalize_money(state["cash"] - release_fee)
@@ -534,9 +535,10 @@ def resolve_police_attention(state: dict[str, Any], crime_level: int, payout: in
         f"Got caught after repeated crime, got sent to jail, and paid {format_money(release_fee)} to be released from the police station.",
     )
     return (
-        f" This time the heat catches up. You get picked up, sent to jail for processing, and held until "
-        f"the police station charges your account {format_money(release_fee)} to release you. You keep going, but that was thirty percent of your money gone."
-    )
+        f" This time the heat catches up. You get picked up before the money changes hands. "
+        f"The police station charges your account {format_money(release_fee)} to release you. "
+        "The gig money never made it to you. You keep going, but that was thirty percent of what you had, gone."
+    ), True
 
 
 def apply_legal_bonus_if_ready(state: dict[str, Any], payout: int) -> str:
@@ -713,19 +715,29 @@ def apply_quick_cash_choice(state: dict[str, Any], label: str) -> None:
     current_level = min(int(state.get("shady_level", 0)), len(SHADY_TITLES) - 1)
     payout = get_crime_payout(current_level)
     state["shady_level"] = min(current_level + 1, len(SHADY_TITLES) - 1)
-    state["cash"] += payout
     state["stress"] += 8 + state["shady_level"]
     state["morality"] -= 2
     state["police_heat"] += get_crime_heat_gain(current_level)
     state["hunger"] -= 5
     state["job"] = SHADY_TITLES[current_level]
-    police_line = resolve_police_attention(state, current_level, payout)
+
+    # Check for arrest BEFORE adding payout — getting caught means the money never landed :(
+    police_line, arrested = resolve_police_attention(state, current_level, payout)
+
     add_event(state["criminal_history"], f"Used the easy-money contact: {label}.")
-    add_event(state["major_events"], f"Made {format_money(payout)} through {state['job']}.")
-    state["last_outcome"] = (
-        f"The shady route pays {format_money(payout)} fast, exactly four times what comparable legal work would pay, "
-        f"but {state['job']} puts more attention on you than I like.{police_line}"
-    )
+
+    if arrested:
+        add_event(state["major_events"], f"Attempted {state['job']} but got picked up before collecting.")
+        state["last_outcome"] = (
+            f"The {state['job']} run gets intercepted before any money changes hands.{police_line}"
+        )
+    else:
+        state["cash"] += payout
+        add_event(state["major_events"], f"Made {format_money(payout)} through {state['job']}.")
+        state["last_outcome"] = (
+            f"The shady route pays {format_money(payout)} fast, exactly four times what comparable legal work would pay, "
+            f"but {state['job']} puts more attention on you than I like.{police_line}"
+        )
 
 
 def apply_street_information_choice(state: dict[str, Any], label: str) -> None:
