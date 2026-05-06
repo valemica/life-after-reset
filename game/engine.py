@@ -4,10 +4,12 @@ import json
 from typing import Any
 
 from ai.scene_generation import build_ai_scene
+from game.economy import build_food_menu, format_money, normalize_money
 from game.state import (
     FINANCIAL_INDEPENDENCE_GOAL,
     add_event,
     add_unique_item,
+    clamp,
     normalize_state,
     remember_tom_line,
 )
@@ -36,7 +38,6 @@ def get_scene_signature(state: dict[str, Any]) -> str:
         "day_count": state["day_count"],
         "cash": state["cash"],
         "health": state["health"],
-        "energy": state["energy"],
         "hunger": state["hunger"],
         "stress": state["stress"],
         "morality": state["morality"],
@@ -72,7 +73,6 @@ def get_dynamic_scene_signature(state: dict[str, Any]) -> str:
         "turn_count": state["turn_count"],
         "cash": state["cash"],
         "health": state["health"],
-        "energy": state["energy"],
         "hunger": state["hunger"],
         "stress": state["stress"],
         "morality": state["morality"],
@@ -146,7 +146,7 @@ The bad news? The world kept moving.
 The worse news? You don't really have family coming to save you, no close friends on file, and your life is currently being held together by a discharge packet, a motel voucher, and my extremely professional guidance. 
 The decent news? Your grandmother left you $1,450. Also a terrible 2001 Volvo, which the city is currently holding hostage for $500.
 
-Las Playas has changed a lot since you've been gone. The streets are rougher, the people are more desperate, and crime is on the rise. If you want to rebuild something real here, you are going to need food, sleep, transport, cash, and better judgment than this city usually rewards. The state has a very official phrase for being "on your own," and because bureaucracy loves a number, Tom's target for you is $100,000 in your account. Get there, and nobody gets to call you a recovery case anymore. That is the situation. You are waking up after fifteen lost years with a little money, a bad car, almost no support, and one actual chance to decide what kind of life you build next.
+Las Playas has changed a lot since you've been gone. The streets are rougher, the people are more desperate, and crime is on the rise. If you want to rebuild something real here, you are going to need food, sleep, transport, cash, and better judgment than this city usually rewards. The state has a very official phrase for being "on your own," and because bureaucracy loves a number, my target for you is $100,000 in your account. Get there, and nobody gets to call you a recovery case anymore. That is the situation. You are waking up after fifteen lost years with a little money, a bad car, almost no support, and one actual chance to decide what kind of life you build next.
 
 So let's decide what to do first.
 """.strip()
@@ -154,10 +154,10 @@ So let's decide what to do first.
     return {
         "id": "hospital_intro",
         "kicker": "Las Playas General Hospital",
-        "title": "Tom's First Briefing",
+        "title": "First Briefing",
         "narration": narration,
         "options": [
-            {"id": "review_discharge_plan", "label": "Review the discharge plan with Tom"},
+            {"id": "review_discharge_plan", "label": "Review the discharge plan with me"},
             {"id": "ask_for_support", "label": "Ask for a motel voucher and basic support"},
             {"id": "call_impound_lot", "label": "Call the impound lot about the Volvo"},
             {"id": "follow_easy_cash_tip", "label": "Pocket a whispered easy-cash tip from the hallway"},
@@ -294,14 +294,14 @@ Look at that account balance, {state["name"]}. One hundred thousand dollars. The
 
 I am proud of you. Really proud. You woke up with almost nothing but a hospital bracelet, a bad car, and me talking too much, and you built enough stability to stand on your own. This is where I say goodbye as your assigned support specialist. As your friend, I am still rooting for you.
 """.strip()
-        title = "Tom's Proud Goodbye"
+        title = "Proud Goodbye"
     else:
         narration = f"""
 Well. This is not exactly the path I would have planned for you, {state["name"]}, and I am choosing my words carefully because I know you can see my face right now.
 
-But you got one hundred thousand dollars in your account, my friend. That was the line Tom, the state, and all the paperwork treated as proof that you could be on your own. So this is where I say goodbye. You got this. Just try to stay alive, enjoy the life you fought your way back into, and maybe do not make me regret believing in you.
+But you got one hundred thousand dollars in your account, my friend. That was the line the state, the paperwork, and I treated as proof that you could be on your own. So this is where I say goodbye. You got this. Just try to stay alive, enjoy the life you fought your way back into, and maybe do not make me regret believing in you.
 """.strip()
-        title = "Tom Lets You Go"
+        title = "I Let You Go"
 
     return {
         "id": "financial_independence_ending",
@@ -316,6 +316,8 @@ def apply_choice(state: dict[str, Any], choice_id: str) -> None:
     if choice_id.startswith("ai_choice_"):
         handle_dynamic_choice(state, choice_id)
         state["turn_count"] += 1
+        resolve_hunger_emergency(state)
+        maybe_add_hunger_warning(state)
         normalize_state(state)
         state["dynamic_scene"] = None
         maybe_finish_game(state)
@@ -341,6 +343,8 @@ def apply_choice(state: dict[str, Any], choice_id: str) -> None:
 
     handlers[choice_id](state)
     state["turn_count"] += 1
+    resolve_hunger_emergency(state)
+    maybe_add_hunger_warning(state)
     normalize_state(state)
     state["dynamic_scene"] = None
     maybe_finish_game(state)
@@ -364,9 +368,15 @@ def handle_dynamic_choice(state: dict[str, Any], choice_id: str) -> None:
     state["current_scene"] = "street_hub"
     state["current_phase"] = "survival"
 
+    if action_type == "food":
+        apply_food_choice(state, label, selected_option)
+        return
+    if action_type == "food_menu":
+        apply_open_food_menu_choice(state, label)
+        return
+
     dynamic_handlers = {
         "legal_work": apply_legal_work_choice,
-        "food": apply_food_choice,
         "housing": apply_housing_choice,
         "transport": apply_transport_choice,
         "rest": apply_rest_choice,
@@ -409,6 +419,49 @@ def remember_choice(state: dict[str, Any], label: str, action_type: str) -> None
         del history[0]
 
 
+def resolve_hunger_emergency(state: dict[str, Any]) -> None:
+    if float(state.get("hunger", 0)) > 0:
+        return
+
+    current_cash = normalize_money(state.get("cash", 0))
+    hospital_charge = normalize_money(current_cash * 0.10)
+    state["cash"] = normalize_money(current_cash - hospital_charge)
+    state["hunger"] = 25
+    state["health"] = clamp(int(state.get("health", 0)) - 6, 0, 100)
+    state["stress"] = clamp(int(state.get("stress", 0)) + 14, 0, 100)
+    state["current_scene"] = "street_hub"
+    state["current_phase"] = "survival"
+    state["active_flags"]["food_menu_open"] = False
+    add_unique_item(state["inventory"], "hospital hunger discharge note")
+    add_event(state["major_events"], f"Collapsed from hunger and was charged {format_money(hospital_charge)} at the hospital.")
+    state["last_outcome"] = (
+        f"You hit 0 hunger, collapsed, and woke up at Las Playas General Hospital. "
+        f"The hospital charged your account {format_money(hospital_charge)}, leaving you with {format_money(state['cash'])}. "
+        "I helped you get discharged, and I need you to keep hunger above 10 and eat before this becomes another emergency."
+    )
+
+
+def maybe_add_hunger_warning(state: dict[str, Any]) -> None:
+    hunger = int(state.get("hunger", 0))
+    if hunger <= 0 or hunger > 10:
+        return
+
+    warning = (
+        f" Pay attention to your hunger, you are at {hunger}, so you have to eat something now, "
+        "before I have to watch you get dragged back to the hospital."
+    )
+    if warning.strip() not in state.get("last_outcome", ""):
+        state["last_outcome"] = f"{state.get('last_outcome', '').rstrip()}{warning}"
+
+
+def apply_open_food_menu_choice(state: dict[str, Any], label: str) -> None:
+    state["active_flags"]["food_menu_open"] = True
+    add_event(state["major_events"], f"Stopped to look at food options: {label}.")
+    state["last_outcome"] = (
+        "I do not count this as a meal yet. Let me pull some real food options for you to pick before hunger makes the decision for you."
+    )
+
+
 def apply_legal_work_choice(state: dict[str, Any], label: str) -> None:
     legal_titles = [
         "entry-level shift screening this week",
@@ -422,7 +475,7 @@ def apply_legal_work_choice(state: dict[str, Any], label: str) -> None:
 
     state["day_count"] += 1
     state["energy"] -= 10
-    state["hunger"] += 8
+    state["hunger"] -= 8
 
     if state.get("job_lead") or state["active_flags"].get("job_center_visited"):
         state["legal_level"] = min(int(state.get("legal_level", 0)) + 1, len(legal_payouts) - 1)
@@ -452,18 +505,36 @@ def apply_legal_work_choice(state: dict[str, Any], label: str) -> None:
     state["last_outcome"] = "It is not a paycheck yet, but it is a real lead with a place, a time, and a reason to show up."
 
 
-def apply_food_choice(state: dict[str, Any], label: str) -> None:
+def apply_food_choice(state: dict[str, Any], label: str, selected_option: dict[str, Any] | None = None) -> None:
     state["day_count"] += 1
-    cost = 14 if state["cash"] >= 14 else 0
-    state["cash"] -= cost
-    state["hunger"] -= 28 if cost else -6
-    state["energy"] += 6 if cost else -2
-    state["stress"] -= 2 if cost else -3
+    state["active_flags"]["food_menu_open"] = False
+    selected_option = selected_option or {}
+    menu = build_food_menu(state["cash"], state.get("cash_goal", FINANCIAL_INDEPENDENCE_GOAL))
+    fallback_option = menu[1] if len(menu) > 1 else menu[0]
+    cost = normalize_money(selected_option.get("food_price", fallback_option["food_price"]))
+    hunger_gain = int(selected_option.get("hunger_gain", fallback_option["hunger_gain"]))
+    food_name = str(selected_option.get("food_name", "meal"))
+
+    if state["cash"] >= cost:
+        state["cash"] = normalize_money(state["cash"] - cost)
+        state["hunger"] += hunger_gain
+        state["energy"] += min(12, max(4, hunger_gain // 8))
+        state["stress"] -= 3
+        add_event(state["major_events"], f"Handled food: {label}.")
+        state["last_outcome"] = (
+            f"You spend {format_money(cost)} on a {food_name}, regain {hunger_gain} hunger points, "
+            "and I can relax a little because eating is cheaper than another hospital bill."
+        )
+        return
+
+    state["hunger"] -= 5
+    state["energy"] -= 2
+    state["stress"] += 5
     add_event(state["major_events"], f"Handled food: {label}.")
-    if cost:
-        state["last_outcome"] = "The meal is simple, hot, and worth every dollar because your hands stop shaking afterward."
-    else:
-        state["last_outcome"] = "You try to solve hunger without spending money, but the city is not generous about empty pockets."
+    state["last_outcome"] = (
+        f"You try to buy food, but {format_money(cost)} is more than you can spend right now. "
+        "I start looking for a cheaper way to get calories into you before hunger turns medical."
+    )
 
 
 def apply_housing_choice(state: dict[str, Any], label: str) -> None:
@@ -523,7 +594,7 @@ def apply_transport_choice(state: dict[str, Any], label: str) -> None:
 def apply_rest_choice(state: dict[str, Any], label: str) -> None:
     state["day_count"] += 1
     state["energy"] += 18
-    state["hunger"] += 5
+    state["hunger"] -= 5
     state["stress"] -= 8
     state["health"] += 4
     add_event(state["major_events"], f"Chose recovery over motion: {label}.")
@@ -565,12 +636,12 @@ def apply_quick_cash_choice(state: dict[str, Any], label: str) -> None:
     state["stress"] += 8 + state["shady_level"]
     state["morality"] -= 2
     state["police_heat"] += 1 + state["shady_level"]
-    state["hunger"] += 5
+    state["hunger"] -= 5
     state["job"] = shady_titles[current_level]
     add_event(state["criminal_history"], f"Used the easy-money contact: {label}.")
     add_event(state["major_events"], f"Made ${payout} through {state['job']}.")
     state["last_outcome"] = (
-        f"The shady route pays ${payout} fast, but {state['job']} puts more attention on you than Tom likes."
+        f"The shady route pays ${payout} fast, but {state['job']} puts more attention on you than I like."
     )
 
 
@@ -621,7 +692,7 @@ def maybe_finish_game(state: dict[str, Any]) -> None:
     state["current_phase"] = "ending"
     add_event(state["major_events"], f"Reached ${goal:,} and earned financial independence.")
     state["last_outcome"] = (
-        f"You reached ${goal:,}. Tom's official job is done, and your life is finally yours to keep."
+        f"You reached ${goal:,}. My official job is done, and your life is finally yours to keep."
     )
 
 
@@ -633,11 +704,11 @@ def handle_review_discharge_plan(state: dict[str, Any]) -> None:
     state["energy"] -= 2
     state["morality"] += 1
     state["known_npcs"]["Tom"]["trust"] += 1
-    add_unique_item(state["inventory"], "Tom's handwritten recovery checklist")
+    add_unique_item(state["inventory"], "handwritten recovery checklist")
     add_event(state["lawful_history"], "Reviewed the hospital discharge plan instead of winging it.")
-    add_event(state["major_events"], "Sat down with Tom and mapped out the first steps after discharge.")
+    add_event(state["major_events"], "Sat down with me and mapped out the first steps after discharge.")
     state["last_outcome"] = (
-        "You let Tom walk you through the practical reality: food, shelter, transport, and how not to blow your first day."
+        "You let me walk you through the practical reality: food, shelter, transport, and how not to blow your first day."
     )
 
 
@@ -652,7 +723,7 @@ def handle_ask_for_support(state: dict[str, Any]) -> None:
     add_event(state["lawful_history"], "Accepted formal support services on day one.")
     add_event(state["major_events"], "Asked the hospital for discharge support and got a voucher packet.")
     state["last_outcome"] = (
-        "Tom gets a social worker moving, and within minutes you have a motel voucher and a bus pass instead of just anxiety."
+        "I get a social worker moving, and within minutes you have a motel voucher and a bus pass instead of just anxiety."
     )
 
 
@@ -677,16 +748,16 @@ def handle_follow_easy_cash_tip(state: dict[str, Any]) -> None:
     state["police_heat"] += 1
     add_unique_item(state["inventory"], "folded easy-cash flyer")
     add_event(state["criminal_history"], "Took contact information for a suspicious fast-cash opportunity.")
-    add_event(state["major_events"], "Left the room with a number Tom would absolutely hate.")
+    add_event(state["major_events"], "Left the room with a number I absolutely hate.")
     state["last_outcome"] = (
-        "A hallway whisper turns into a folded flyer in your hand, and Tom notices just enough to look worried."
+        "A hallway whisper turns into a folded flyer in your hand, and I notice just enough to get worried."
     )
 
 
 def handle_eat_hospital_meal(state: dict[str, Any]) -> None:
     state["current_scene"] = "street_hub"
     state["current_phase"] = "survival"
-    state["hunger"] -= 20
+    state["hunger"] += 20
     state["energy"] += 8
     state["stress"] -= 3
     state["housing"] = "voucher packet in hand"
@@ -708,7 +779,7 @@ def handle_secure_motel_room(state: dict[str, Any]) -> None:
     add_event(state["lawful_history"], "Secured housing before wandering into the city.")
     add_event(state["major_events"], "Checked into a motel room for the first night out of the hospital.")
     state["last_outcome"] = (
-        "Tom helps you turn paperwork into an actual room, which means tonight you have a door that locks."
+        "I help you turn paperwork into an actual room, which means tonight you have a door that locks."
     )
 
 
@@ -738,6 +809,7 @@ def handle_skip_to_street_hustle(state: dict[str, Any]) -> None:
     state["current_phase"] = "survival"
     state["cash"] += 80
     state["stress"] += 10
+    state["hunger"] -= 10
     state["morality"] -= 2
     state["police_heat"] += 1
     add_event(state["criminal_history"], "Skipped safe planning to chase immediate money.")
@@ -752,7 +824,7 @@ def handle_visit_job_center(state: dict[str, Any]) -> None:
     state["current_phase"] = "survival"
     state["day_count"] += 1
     state["energy"] -= 6
-    state["hunger"] += 8
+    state["hunger"] -= 8
 
     if not state["active_flags"]["job_center_visited"]:
         state["active_flags"]["job_center_visited"] = True
@@ -772,7 +844,7 @@ def handle_visit_job_center(state: dict[str, Any]) -> None:
     state["reputation"] += 2
     state["morality"] += 1
     state["energy"] -= 9
-    state["hunger"] += 6
+    state["hunger"] -= 6
     state["active_flags"]["worked_shift"] = True
     add_event(state["lawful_history"], "Worked a legal shift to stabilize income.")
     add_event(state["major_events"], "Completed a warehouse temp shift and got paid.")
@@ -788,7 +860,7 @@ def handle_buy_hot_meal(state: dict[str, Any]) -> None:
 
     if state["cash"] >= 14:
         state["cash"] -= 14
-        state["hunger"] -= 25
+        state["hunger"] += 25
         state["energy"] += 5
         state["stress"] -= 2
         add_event(state["major_events"], "Spent money on a hot meal instead of pushing through hunger.")
@@ -797,7 +869,7 @@ def handle_buy_hot_meal(state: dict[str, Any]) -> None:
         )
     else:
         state["stress"] += 5
-        state["hunger"] += 6
+        state["hunger"] -= 6
         state["last_outcome"] = (
             "You count your money twice, come up short on confidence both times, and leave the deli still hungry."
         )
@@ -846,10 +918,10 @@ def handle_quick_cash_move(state: dict[str, Any]) -> None:
     state["stress"] += 7
     state["morality"] -= 2
     state["police_heat"] += 2
-    state["hunger"] += 4
+    state["hunger"] -= 4
     state["active_flags"]["quick_cash_contact"] = True
     add_event(state["criminal_history"], "Took a shady delivery for fast money.")
     add_event(state["major_events"], "Ran a quick-cash errand that paid immediately and felt worse afterward.")
     state["last_outcome"] = (
-        "The cash is real, the instructions are vague, and the whole job leaves you with the kind of nerves Tom warned you about."
+        "The cash is real, the instructions are vague, and the whole job leaves you with exactly the kind of nerves I warned you about."
     )

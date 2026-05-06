@@ -7,6 +7,8 @@ import json
 import re
 from typing import Any
 
+from game.economy import format_money, normalize_money
+
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SAVE_DIR = ROOT_DIR / "saves"
@@ -66,7 +68,7 @@ def create_player_state(name: str) -> dict[str, Any]:
         "shady_level": 0,
         "health": 85,
         "energy": 70,
-        "hunger": 30,
+        "hunger": 70,
         "stress": 40,
         "morality": 0,
         "police_heat": 0,
@@ -111,6 +113,7 @@ def create_player_state(name: str) -> dict[str, Any]:
             "checked_into_motel": False,
             "job_center_visited": False,
             "worked_shift": False,
+            "food_menu_open": False,
         },
     }
 
@@ -126,19 +129,16 @@ def normalize_state(state: dict[str, Any]) -> None:
     state.setdefault("last_choice_type", "")
     state.setdefault("legal_level", 0)
     state.setdefault("shady_level", 0)
+    state.setdefault("active_flags", {})
+    state["active_flags"].setdefault("food_menu_open", False)
 
-    state["cash"] = max(0, int(state["cash"]))
+    state["cash"] = normalize_money(state["cash"])
     state["health"] = clamp(int(state["health"]), 0, 100)
     state["energy"] = clamp(int(state["energy"]), 0, 100)
     state["hunger"] = clamp(int(state["hunger"]), 0, 100)
     state["stress"] = clamp(int(state["stress"]), 0, 100)
     state["police_heat"] = clamp(int(state["police_heat"]), 0, 100)
     state["vehicle"]["fuel"] = clamp(int(state["vehicle"]["fuel"]), 0, 100)
-
-    if state["hunger"] >= 85:
-        state["health"] = clamp(state["health"] - 3, 0, 100)
-    if state["energy"] <= 15:
-        state["stress"] = clamp(state["stress"] + 4, 0, 100)
 
 
 def save_game(state: dict[str, Any]) -> Path:
@@ -163,10 +163,9 @@ def get_progress_snapshot(state: dict[str, Any]) -> dict[str, str]:
 
     return {
         "day": str(state["day_count"]),
-        "cash": f"${state['cash']}",
+        "cash": format_money(state["cash"]),
         "goal_progress": f"{goal_progress}%",
         "health": str(state["health"]),
-        "energy": str(state["energy"]),
         "hunger": str(state["hunger"]),
         "housing": state["housing"],
         "vehicle": vehicle_text,

@@ -5,12 +5,21 @@ import re
 from textwrap import dedent
 from typing import Any
 
-from ai.narration import DEFAULT_MODEL, build_tom_context, ollama, sanitize_narration_text, summarize_history
+from ai.narration import (
+    DEFAULT_MODEL,
+    build_tom_context,
+    mentions_tom_in_third_person,
+    ollama,
+    sanitize_narration_text,
+    summarize_history,
+)
+from game.economy import build_food_menu, format_money
 
 
 ACTION_TYPES = {
     "legal_work",
     "food",
+    "food_menu",
     "housing",
     "transport",
     "rest",
@@ -23,6 +32,9 @@ ACTION_TYPES = {
 
 
 def build_ai_scene(state: dict[str, Any], fallback_narration: str) -> dict[str, Any]:
+    if state.get("hunger", 100) <= 50:
+        return build_food_priority_scene(state) if state["active_flags"].get("food_menu_open") else build_low_hunger_scene(state)
+
     if ollama is None:
         return build_fallback_ai_scene(state)
 
@@ -50,15 +62,17 @@ def build_ai_scene(state: dict[str, Any], fallback_narration: str) -> dict[str, 
         - A choice is valid only if the narration directly mentions the opportunity in the evidence phrase, or the opportunity is already listed in known facts.
         - The evidence field must be an exact substring from the narration.
         - You may introduce a shady opportunity only by mentioning it in this narration first, such as a flyer, old hospital hallway number, or street contact Tom noticed. If you do, make Tom uneasy but loyal.
-        - When money, hunger, health, or energy are getting bad, include one tempting shady option sometimes, even for a mostly legal player.
+        - Hunger is a fed meter: 100 means full and 0 means a hospital-level hunger emergency.
+        - If hunger is 10 or below, Tom must directly tell the player to eat something before they collapse.
+        - When money, hunger, or health are getting bad, include one tempting shady option sometimes, even for a mostly legal player.
         - If the player keeps choosing legal_work, offer laddered legal progress like better shifts, supervisor training, certifications, delivery contracts, or small-business steps.
         - If the player keeps choosing quick_cash, offer laddered criminal progress toward larger, faster payouts while making the risk clear.
         - Do not offer vouchers, jobs, meals, vehicles, people, places, or phone numbers unless Tom mentions them in the narration first or known facts already include them.
-        - Keep choices specific to the character's current money, health, energy, hunger, housing, vehicle, job leads, inventory, history, and Tom's relationship with them.
+        - Keep choices specific to the character's current money, health, hunger, housing, vehicle, job leads, inventory, history, and Tom's relationship with them.
         - Avoid repeating the same four options from previous scenes.
         - Do not offer an option with the same wording as a recently selected option unless it is a continuing ladder action with changed wording.
         - If a practical need returns, introduce it through a new concrete detail in the narration instead of repeating the same menu-style sentence.
-        - Use only these action_type values: legal_work, food, housing, transport, rest, social_support, quick_cash, street_information, medical_followup, budget_plan.
+        - Use only these action_type values: legal_work, food, food_menu, housing, transport, rest, social_support, quick_cash, street_information, medical_followup, budget_plan.
         """
     ).strip()
 
@@ -91,11 +105,10 @@ def build_user_prompt(state: dict[str, Any], fallback_narration: str) -> str:
         f"""
         Client name: {state["name"]}
         Day: {state["day_count"]}
-        Money: ${state["cash"]}
-        Goal: ${state["cash_goal"]}
+        Money: {format_money(state["cash"])}
+        Goal: {format_money(state["cash_goal"])}
         Health: {state["health"]}
-        Energy: {state["energy"]}
-        Hunger: {state["hunger"]}
+        Hunger/fed meter: {state["hunger"]} out of 100. 0 means hospital emergency; 10 or below means Tom must warn them to eat.
         Police attention: {state["police_heat"]}
         Morality read: {state["morality"]}
         Housing: {state["housing"]}
@@ -189,7 +202,7 @@ def parse_json_payload(raw_content: str) -> dict[str, Any]:
 def validate_ai_scene(payload: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | None:
     narration = sanitize_narration_text(str(payload.get("narration", "")))
     options = payload.get("options")
-    if not narration or not isinstance(options, list) or len(options) != 4:
+    if not narration or mentions_tom_in_third_person(narration) or not isinstance(options, list) or len(options) != 4:
         return None
 
     clean_options = []
@@ -201,6 +214,8 @@ def validate_ai_scene(payload: dict[str, Any], state: dict[str, Any]) -> dict[st
         evidence = sanitize_narration_text(str(option.get("evidence", "")))
 
         if not label or label in used_labels or action_type not in ACTION_TYPES:
+            return None
+        if action_type == "food_menu" and state.get("hunger", 100) > 50:
             return None
         if label.lower() in recent_labels:
             return None
@@ -217,9 +232,16 @@ def validate_ai_scene(payload: dict[str, Any], state: dict[str, Any]) -> dict[st
             }
         )
 
+    kicker = sanitize_label(str(payload.get("kicker", "Las Playas")) or "Las Playas")
+    title = sanitize_label(str(payload.get("title", "The Next Move")) or "The Next Move")
+    if mentions_tom_in_third_person(kicker):
+        kicker = "Las Playas"
+    if mentions_tom_in_third_person(title):
+        title = "The Next Move"
+
     return {
-        "kicker": sanitize_label(str(payload.get("kicker", "Las Playas")) or "Las Playas"),
-        "title": sanitize_label(str(payload.get("title", "The Next Move")) or "The Next Move"),
+        "kicker": kicker,
+        "title": title,
         "narration": narration,
         "options": clean_options,
         "ai_generated": True,
@@ -282,9 +304,12 @@ def summarize_recent_offered_options(state: dict[str, Any]) -> str:
 
 
 def build_fallback_ai_scene(state: dict[str, Any]) -> dict[str, Any]:
+    if state.get("hunger", 100) <= 50:
+        return build_food_priority_scene(state) if state["active_flags"].get("food_menu_open") else build_low_hunger_scene(state)
+
     flags = state["active_flags"]
     last_label = state.get("last_choice_label") or ""
-    pressure_is_high = state["cash"] < 300 or state["hunger"] > 70 or state["energy"] < 25 or state["health"] < 45
+    pressure_is_high = state["cash"] < 300 or state["hunger"] < 25 or state["health"] < 45
     recent_labels = get_recent_option_labels(state)
     turn_variant = int(state.get("turn_count", 0))
 
@@ -379,6 +404,112 @@ def build_fallback_ai_scene(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_food_priority_scene(state: dict[str, Any]) -> dict[str, Any]:
+    menu = build_food_menu(state["cash"], state.get("cash_goal", 100_000))
+    hunger = int(state.get("hunger", 0))
+    last_outcome = state.get("last_outcome") or "Your body is making the decision louder than either of us."
+    meal_lines = [
+        f"the {option['evidence']} adds {option['hunger_gain']} hunger for {format_money(option['food_price'])}"
+        for option in menu
+    ]
+
+    if hunger <= 10:
+        warning = (
+            f"Your hunger is down to {hunger}. Eat something now. "
+            "That is not me being dramatic; that is me trying to keep you out of Las Playas General Hospital."
+        )
+        title = "Eat Before The Hospital"
+    else:
+        warning = (
+            f"Your hunger is at {hunger}, which is low enough that food stops being optional. "
+            "We are handling calories before we get clever."
+        )
+        title = "Food Comes First"
+
+    narration = (
+        f"Okay, here is the immediate problem: {last_outcome} {warning} "
+        f"Right now, {', '.join(meal_lines[:-1])}, or {meal_lines[-1]}."
+    )
+
+    return {
+        "kicker": "Hunger Check",
+        "title": title,
+        "narration": narration,
+        "options": menu,
+        "ai_generated": False,
+    }
+
+
+def build_low_hunger_scene(state: dict[str, Any]) -> dict[str, Any]:
+    hunger = int(state.get("hunger", 0))
+    last_outcome = state.get("last_outcome") or "Your body is starting to make hunger the loudest fact in the room."
+    if hunger <= 10:
+        warning = (
+            f"Your hunger is down to {hunger}. Eat something now, because the hospital is what happens when this hits zero."
+        )
+        title = "I Push Food"
+    else:
+        warning = (
+            f"Your hunger is at {hunger}. You can keep moving if you insist, but I am putting food on the table as the obvious move."
+        )
+        title = "Food Is The Obvious Move"
+
+    support_label, support_evidence = get_support_option_for_low_hunger(state)
+    risky_label, risky_evidence = get_risky_option_for_low_hunger(state)
+    options = [
+        {
+            "id": "ai_choice_0",
+            "label": "Eat something before this gets worse",
+            "action_type": "food_menu",
+            "evidence": "Eat something",
+        },
+        {
+            "id": "ai_choice_1",
+            "label": get_legal_fallback_label(state),
+            "action_type": "legal_work",
+            "evidence": "legal work",
+        },
+        {
+            "id": "ai_choice_2",
+            "label": support_label,
+            "action_type": "social_support",
+            "evidence": support_evidence,
+        },
+        {
+            "id": "ai_choice_3",
+            "label": risky_label,
+            "action_type": "quick_cash",
+            "evidence": risky_evidence,
+        },
+    ]
+
+    narration = (
+        f"Okay, here is the immediate problem: {last_outcome} {warning} "
+        f"Eat something is the choice I want you to make. If you ignore me, legal work is still there, "
+        f"{support_evidence} might steady the day, and {risky_evidence} is still hanging around like a bad shortcut."
+    )
+
+    return {
+        "kicker": "Hunger Check",
+        "title": title,
+        "narration": narration,
+        "options": options,
+        "ai_generated": False,
+    }
+
+
+def get_support_option_for_low_hunger(state: dict[str, Any]) -> tuple[str, str]:
+    if state["active_flags"].get("has_voucher"):
+        return "Ask support services for practical help", "support services"
+    return "Ask the county benefits desk for help", "county benefits desk"
+
+
+def get_risky_option_for_low_hunger(state: dict[str, Any]) -> tuple[str, str]:
+    if state["active_flags"].get("quick_cash_contact"):
+        return get_shady_fallback_label(state), "easy-money contact"
+    return "Text the easy-cash number", "easy-cash number"
+
+
 def build_option_spec(kind: str, turn_variant: int) -> tuple[str, str, str, str]:
     variants = {
         "food": [
@@ -389,7 +520,7 @@ def build_option_spec(kind: str, turn_variant: int) -> tuple[str, str, str, str]
         "social_support": [
             ("Ask the county benefits desk for help", "social_support", "county benefits desk"),
             ("Use the support-services contact", "social_support", "support-services contact"),
-            ("Let Tom push the paperwork line", "social_support", "paperwork line"),
+            ("Let me push the paperwork line", "social_support", "paperwork line"),
         ],
         "medical_followup": [
             ("Check in at the clinic desk", "medical_followup", "clinic desk"),
@@ -402,8 +533,8 @@ def build_option_spec(kind: str, turn_variant: int) -> tuple[str, str, str, str]
             ("Sit down before your body votes no", "rest", "sit down"),
         ],
         "budget_plan": [
-            ("Make a budget with Tom", "budget_plan", "actual budget"),
-            ("Sort the cash plan with Tom", "budget_plan", "cash plan"),
+            ("Make a budget with me", "budget_plan", "actual budget"),
+            ("Sort the cash plan with me", "budget_plan", "cash plan"),
             ("Map the next bills before moving", "budget_plan", "next bills"),
         ],
         "transport_recovered": [
