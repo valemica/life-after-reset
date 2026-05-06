@@ -56,6 +56,8 @@ def build_ai_scene(state: dict[str, Any], fallback_narration: str) -> dict[str, 
         - Do not offer vouchers, jobs, meals, vehicles, people, places, or phone numbers unless Tom mentions them in the narration first or known facts already include them.
         - Keep choices specific to the character's current money, health, energy, hunger, housing, vehicle, job leads, inventory, history, and Tom's relationship with them.
         - Avoid repeating the same four options from previous scenes.
+        - Do not offer an option with the same wording as a recently selected option unless it is a continuing ladder action with changed wording.
+        - If a practical need returns, introduce it through a new concrete detail in the narration instead of repeating the same menu-style sentence.
         - Use only these action_type values: legal_work, food, housing, transport, rest, social_support, quick_cash, street_information, medical_followup, budget_plan.
         """
     ).strip()
@@ -115,6 +117,10 @@ def build_user_prompt(state: dict[str, Any], fallback_narration: str) -> str:
         Recent lawful moves: {summarize_history(state.get("lawful_history", []), 5)}
         Recent risky moves: {summarize_history(state.get("criminal_history", []), 5)}
         Recent major events: {summarize_history(state.get("major_events", []), 5)}
+        Recently selected option labels to avoid repeating exactly:
+        {summarize_recent_choices(state)}
+        Recently shown option labels to vary or replace:
+        {summarize_recent_offered_options(state)}
         Last outcome: {state.get("last_outcome") or "None"}
         Recent Tom narration memory to avoid repeating:
         {summarize_tom_memory(state)}
@@ -188,12 +194,15 @@ def validate_ai_scene(payload: dict[str, Any], state: dict[str, Any]) -> dict[st
 
     clean_options = []
     used_labels = set()
+    recent_labels = get_recent_option_labels(state, limit=8)
     for index, option in enumerate(options):
         label = sanitize_label(str(option.get("label", "")))
         action_type = str(option.get("action_type", "")).strip()
         evidence = sanitize_narration_text(str(option.get("evidence", "")))
 
         if not label or label in used_labels or action_type not in ACTION_TYPES:
+            return None
+        if label.lower() in recent_labels:
             return None
         if not evidence or evidence.lower() not in narration.lower():
             return None
@@ -223,14 +232,65 @@ def sanitize_label(value: str) -> str:
     return cleaned[:90]
 
 
+def get_recent_choice_labels(state: dict[str, Any], limit: int = 6) -> set[str]:
+    labels = set()
+    for item in state.get("choice_history", [])[-limit:]:
+        label = sanitize_label(str(item.get("label", ""))).lower()
+        if label:
+            labels.add(label)
+    last_label = sanitize_label(str(state.get("last_choice_label", ""))).lower()
+    if last_label:
+        labels.add(last_label)
+    return labels
+
+
+def get_recent_offered_labels(state: dict[str, Any], limit: int = 2) -> set[str]:
+    labels = set()
+    for memory in state.get("tom_memory", [])[-limit:]:
+        for label in memory.get("offered_labels", []):
+            cleaned = sanitize_label(str(label)).lower()
+            if cleaned:
+                labels.add(cleaned)
+    return labels
+
+
+def get_recent_option_labels(state: dict[str, Any], limit: int = 6) -> set[str]:
+    return get_recent_choice_labels(state, limit=limit) | get_recent_offered_labels(state)
+
+
+def summarize_recent_choices(state: dict[str, Any]) -> str:
+    choices = state.get("choice_history", [])[-6:]
+    if not choices and not state.get("last_choice_label"):
+        return "None"
+
+    lines = []
+    for choice in choices:
+        label = sanitize_label(str(choice.get("label", "")))
+        action_type = str(choice.get("action_type", "")).strip() or "unknown"
+        if label:
+            lines.append(f"- {label} ({action_type})")
+    if not lines and state.get("last_choice_label"):
+        lines.append(f"- {sanitize_label(str(state['last_choice_label']))} ({state.get('last_choice_type') or 'unknown'})")
+    return "\n".join(lines)
+
+
+def summarize_recent_offered_options(state: dict[str, Any]) -> str:
+    labels = sorted(get_recent_offered_labels(state, limit=1))
+    if not labels:
+        return "None"
+    return "\n".join(f"- {label}" for label in labels)
+
+
 def build_fallback_ai_scene(state: dict[str, Any]) -> dict[str, Any]:
     flags = state["active_flags"]
     last_label = state.get("last_choice_label") or ""
     pressure_is_high = state["cash"] < 300 or state["hunger"] > 70 or state["energy"] < 25 or state["health"] < 45
+    recent_labels = get_recent_option_labels(state)
+    turn_variant = int(state.get("turn_count", 0))
 
     if last_label:
         opener = (
-            f"Okay, so after {last_label.lower()}, here is what we actually learned: "
+            f"Okay, so after you chose to {format_choice_as_action(last_label)}, here is what we actually learned: "
             f"{state.get('last_outcome') or 'the city answered us, even if it did not make anything simple.'}"
         )
     else:
@@ -239,52 +299,54 @@ def build_fallback_ai_scene(state: dict[str, Any]) -> dict[str, Any]:
         )
 
     option_specs = [
-        ("Buy soup at the corner deli", "food", "corner deli"),
-        ("Ask the county benefits desk for help", "social_support", "county benefits desk"),
-        ("Check in at the clinic desk", "medical_followup", "clinic desk"),
-        ("Rest on the quiet bench", "rest", "quiet bench"),
-        ("Make a budget with Tom", "budget_plan", "actual budget"),
+        build_option_spec("food", turn_variant),
+        build_option_spec("social_support", turn_variant),
+        build_option_spec("medical_followup", turn_variant),
+        build_option_spec("rest", turn_variant),
+        build_option_spec("budget_plan", turn_variant),
     ]
 
     if flags.get("car_recovered"):
         transport_line = "the Volvo is outside if you want to keep transportation from becoming tomorrow's emergency"
-        option_specs.append(("Check the Volvo and plan the next drive", "transport", "the Volvo is outside"))
+        option_specs.append(build_option_spec("transport_recovered", turn_variant))
     elif flags.get("called_impound_lot") or state["cash"] >= state["vehicle"]["recovery_cost"]:
         transport_line = "the impound lot already confirmed the Volvo can be released for five hundred dollars"
-        option_specs.append(("Go to the impound lot for the Volvo", "transport", "impound lot already confirmed"))
+        option_specs.append(build_option_spec("transport_release", turn_variant))
     else:
         transport_line = "we can call the impound lot again before you spend money you cannot afford to lose"
-        option_specs.append(("Call the impound lot for details", "transport", "call the impound lot again"))
+        option_specs.append(build_option_spec("transport_call", turn_variant))
 
     if state.get("job_lead"):
         legal_line = f"the legal ladder is still there through {state['job_lead']}"
-        option_specs[1] = (get_legal_fallback_label(state), "legal_work", "legal ladder")
+        option_specs[1] = (get_legal_fallback_label(state), "legal_work", "legal ladder", "ladder")
     elif flags.get("job_center_visited"):
         legal_line = "the workforce office is still the least glamorous legal door in the city"
-        option_specs[1] = (get_legal_fallback_label(state), "legal_work", "workforce office")
+        option_specs[1] = (get_legal_fallback_label(state), "legal_work", "workforce office", "ladder")
     else:
         legal_line = "the workforce office opens today, and boring legal money is still money"
-        option_specs[1] = ("Visit the workforce office", "legal_work", "workforce office opens today")
+        option_specs[1] = ("Visit the workforce office", "legal_work", "workforce office opens today", "single")
 
     shady_line = ""
     if flags.get("quick_cash_contact"):
         shady_line = "the easy-money contact is still there, looking like trouble with a phone number"
-        option_specs.append((get_shady_fallback_label(state), "quick_cash", "easy-money contact"))
+        option_specs.append((get_shady_fallback_label(state), "quick_cash", "easy-money contact", "ladder"))
     elif pressure_is_high or state.get("legal_level", 0) >= 2:
         shady_line = "I also remember the easy-money flyer from the hospital hallway, and I hate that it is starting to sound useful"
-        option_specs.append((get_shady_fallback_label(state), "quick_cash", "easy-money flyer from the hospital hallway"))
+        option_specs.append((get_shady_fallback_label(state), "quick_cash", "easy-money flyer from the hospital hallway", "single"))
+
+    option_specs = filter_recent_options(option_specs, recent_labels, turn_variant)
 
     first_option = state.get("turn_count", 0) % len(option_specs)
     rotated_options = option_specs[first_option:] + option_specs[:first_option]
     selected_options = rotated_options[:4]
-    required_evidence = {evidence.lower() for _, _, evidence in selected_options}
+    required_evidence = {evidence.lower() for _, _, evidence, _ in selected_options}
 
     option_lines = [
-        "food is still possible at the corner deli",
-        "paperwork help is still sitting behind the county benefits desk",
-        "the clinic desk can keep your recovery from becoming a preventable problem",
-        "a quiet bench is not a life plan, but it is ten minutes of not collapsing",
-        "an actual budget can keep the $100,000 goal from turning into a fantasy",
+        *get_all_option_lines("food"),
+        *get_all_option_lines("social_support"),
+        *get_all_option_lines("medical_followup"),
+        *get_all_option_lines("rest"),
+        *get_all_option_lines("budget_plan"),
         transport_line,
         legal_line,
     ]
@@ -311,10 +373,123 @@ def build_fallback_ai_scene(state: dict[str, Any]) -> dict[str, Any]:
                 "action_type": action_type,
                 "evidence": evidence,
             }
-            for index, (label, action_type, evidence) in enumerate(selected_options)
+            for index, (label, action_type, evidence, _) in enumerate(selected_options)
         ],
         "ai_generated": False,
     }
+
+
+def build_option_spec(kind: str, turn_variant: int) -> tuple[str, str, str, str]:
+    variants = {
+        "food": [
+            ("Buy soup at the corner deli", "food", "corner deli"),
+            ("Grab rice and coffee from the deli counter", "food", "deli counter"),
+            ("Spend a few dollars on something hot", "food", "something hot"),
+        ],
+        "social_support": [
+            ("Ask the county benefits desk for help", "social_support", "county benefits desk"),
+            ("Use the support-services contact", "social_support", "support-services contact"),
+            ("Let Tom push the paperwork line", "social_support", "paperwork line"),
+        ],
+        "medical_followup": [
+            ("Check in at the clinic desk", "medical_followup", "clinic desk"),
+            ("Book the follow-up before symptoms snowball", "medical_followup", "follow-up"),
+            ("Get the nurse to look you over", "medical_followup", "nurse"),
+        ],
+        "rest": [
+            ("Rest on the quiet bench", "rest", "quiet bench"),
+            ("Take ten minutes in the shade", "rest", "ten minutes"),
+            ("Sit down before your body votes no", "rest", "sit down"),
+        ],
+        "budget_plan": [
+            ("Make a budget with Tom", "budget_plan", "actual budget"),
+            ("Sort the cash plan with Tom", "budget_plan", "cash plan"),
+            ("Map the next bills before moving", "budget_plan", "next bills"),
+        ],
+        "transport_recovered": [
+            ("Check the Volvo and plan the next drive", "transport", "the Volvo is outside"),
+            ("Put the Volvo to practical use", "transport", "the Volvo is outside"),
+            ("Use the car before the day boxes you in", "transport", "the Volvo is outside"),
+        ],
+        "transport_release": [
+            ("Go to the impound lot for the Volvo", "transport", "impound lot already confirmed"),
+            ("Pay the release fee and recover the car", "transport", "impound lot already confirmed"),
+            ("Turn the impound form into keys", "transport", "impound lot already confirmed"),
+        ],
+        "transport_call": [
+            ("Call the impound lot for details", "transport", "call the impound lot again"),
+            ("Confirm the Volvo release cost", "transport", "call the impound lot again"),
+            ("Get the impound clerk on the phone", "transport", "call the impound lot again"),
+        ],
+    }
+    label, action_type, evidence = variants[kind][turn_variant % len(variants[kind])]
+    return label, action_type, evidence, "repeatable"
+
+
+def format_choice_as_action(label: str) -> str:
+    cleaned = sanitize_label(label).strip()
+    if not cleaned:
+        return "make that move"
+
+    lowered = cleaned[:1].lower() + cleaned[1:]
+    if lowered.startswith(("ask ", "call ", "check ", "go ", "pay ", "put ", "run ", "text ", "use ", "visit ")):
+        return lowered
+    if lowered.startswith(("buy ", "grab ", "spend ", "take ", "rest ", "book ", "get ", "make ", "sort ", "map ", "let ")):
+        return lowered
+    return f"pick {lowered}"
+
+
+def get_option_line(kind: str, turn_variant: int) -> str:
+    lines = {
+        "food": [
+            "food is still possible at the corner deli, but this time I am counting it as medicine with steam on it",
+            "the deli counter has rice, coffee, and the kind of fluorescent lighting that makes survival feel official",
+            "something hot would do more for your hands than another heroic speech from me",
+        ],
+        "social_support": [
+            "paperwork help is still sitting behind the county benefits desk",
+            "that support-services contact can turn humiliation into a phone call that actually helps",
+            "the paperwork line is slow, but slow beats stranded",
+        ],
+        "medical_followup": [
+            "the clinic desk can keep your recovery from becoming a preventable problem",
+            "a follow-up now is less dramatic than your body staging a protest later",
+            "the nurse can look you over before pride turns into a medical bill",
+        ],
+        "rest": [
+            "a quiet bench is not a life plan, but it is ten minutes of not collapsing",
+            "ten minutes in the shade would give your nervous system a vote",
+            "you can sit down before your body votes no on this whole comeback",
+        ],
+        "budget_plan": [
+            "an actual budget can keep the $100,000 goal from turning into a fantasy",
+            "a cash plan with me would make the next hour less blurry",
+            "the next bills need a map before they start ambushing you",
+        ],
+    }
+    return lines[kind][turn_variant % len(lines[kind])]
+
+
+def get_all_option_lines(kind: str) -> list[str]:
+    return [get_option_line(kind, index) for index in range(3)]
+
+
+def filter_recent_options(
+    option_specs: list[tuple[str, str, str, str]],
+    recent_labels: set[str],
+    turn_variant: int,
+) -> list[tuple[str, str, str, str]]:
+    filtered = [spec for spec in option_specs if spec[0].lower() not in recent_labels]
+    if len(filtered) >= 4:
+        return filtered
+
+    for kind in ["food", "rest", "medical_followup", "budget_plan", "social_support"]:
+        replacement = build_option_spec(kind, turn_variant + 1)
+        if replacement[0].lower() not in recent_labels and replacement[0] not in {spec[0] for spec in filtered}:
+            filtered.append(replacement)
+        if len(filtered) >= 4:
+            break
+    return filtered or option_specs
 
 
 def get_legal_fallback_label(state: dict[str, Any]) -> str:
