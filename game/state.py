@@ -66,6 +66,10 @@ def create_player_state(name: str) -> dict[str, Any]:
         "last_choice_type": "",
         "legal_level": 0,
         "shady_level": 0,
+        "legal_streak": 0,
+        "crime_streak": 0,
+        "legal_bonus_count": 0,
+        "arrest_count": 0,
         "health": 85,
         "energy": 70,
         "hunger": 70,
@@ -129,6 +133,10 @@ def normalize_state(state: dict[str, Any]) -> None:
     state.setdefault("last_choice_type", "")
     state.setdefault("legal_level", 0)
     state.setdefault("shady_level", 0)
+    state.setdefault("legal_streak", 0)
+    state.setdefault("crime_streak", 0)
+    state.setdefault("legal_bonus_count", 0)
+    state.setdefault("arrest_count", 0)
     state.setdefault("active_flags", {})
     state["active_flags"].setdefault("food_menu_open", False)
 
@@ -167,6 +175,7 @@ def get_progress_snapshot(state: dict[str, Any]) -> dict[str, str]:
         "goal_progress": f"{goal_progress}%",
         "health": str(state["health"]),
         "hunger": str(state["hunger"]),
+        "police_heat": str(state["police_heat"]),
         "housing": state["housing"],
         "vehicle": vehicle_text,
         "job": job_text,

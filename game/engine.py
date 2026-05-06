@@ -15,6 +15,30 @@ from game.state import (
 )
 
 
+LEGAL_TITLES = [
+    "entry-level shift screening this week",
+    "warehouse temp shift",
+    "reliable shift lead track",
+    "assistant supervisor training",
+    "operations supervisor role",
+    "small logistics contract",
+]
+
+LEGAL_PAYOUTS = [100, 250, 600, 1200, 2400, 4500]
+
+SHADY_TITLES = [
+    "easy-money callback",
+    "cash handoff runner",
+    "package route regular",
+    "crew dispatcher",
+    "high-risk stash movement",
+    "five-grand criminal score",
+]
+
+LEGAL_BONUS_EVERY = 3
+JAIL_RELEASE_RATE = 0.30
+
+
 def get_scene(state: dict[str, Any]) -> dict[str, Any]:
     normalize_state(state)
     builders = {
@@ -57,6 +81,10 @@ def get_scene_signature(state: dict[str, Any]) -> str:
         "choice_history": state.get("choice_history"),
         "legal_level": state.get("legal_level"),
         "shady_level": state.get("shady_level"),
+        "legal_streak": state.get("legal_streak"),
+        "crime_streak": state.get("crime_streak"),
+        "legal_bonus_count": state.get("legal_bonus_count"),
+        "arrest_count": state.get("arrest_count"),
         "tom_memory": state.get("tom_memory"),
         "game_over": state.get("game_over"),
         "ending_type": state.get("ending_type"),
@@ -89,6 +117,12 @@ def get_dynamic_scene_signature(state: dict[str, Any]) -> str:
         "flags": state["active_flags"],
         "last_outcome": state["last_outcome"],
         "choice_history": state.get("choice_history"),
+        "legal_level": state.get("legal_level"),
+        "shady_level": state.get("shady_level"),
+        "legal_streak": state.get("legal_streak"),
+        "crime_streak": state.get("crime_streak"),
+        "legal_bonus_count": state.get("legal_bonus_count"),
+        "arrest_count": state.get("arrest_count"),
     }
     return json.dumps(fingerprint, sort_keys=True)
 
@@ -462,40 +496,95 @@ def apply_open_food_menu_choice(state: dict[str, Any], label: str) -> None:
     )
 
 
-def apply_legal_work_choice(state: dict[str, Any], label: str) -> None:
-    legal_titles = [
-        "entry-level shift screening this week",
-        "warehouse temp shift",
-        "reliable shift lead track",
-        "assistant supervisor training",
-        "operations supervisor role",
-        "small logistics contract",
-    ]
-    legal_payouts = [0, 120, 350, 900, 1800, 3200]
+def get_legal_payout(level: int) -> int:
+    return LEGAL_PAYOUTS[min(max(level, 0), len(LEGAL_PAYOUTS) - 1)]
 
+
+def get_crime_payout(level: int) -> int:
+    return get_legal_payout(level) * 4
+
+
+def get_crime_heat_gain(level: int) -> int:
+    return 4 + (min(max(level, 0), 5) * 2)
+
+
+def get_arrest_threshold(state: dict[str, Any], level: int) -> int:
+    arrest_count = int(state.get("arrest_count", 0))
+    return max(10, 22 - min(max(level, 0), 5) - arrest_count)
+
+
+def resolve_police_attention(state: dict[str, Any], crime_level: int, payout: int) -> str:
+    threshold = get_arrest_threshold(state, crime_level)
+    if int(state.get("police_heat", 0)) < threshold:
+        return (
+            f" Police heat is at {state['police_heat']} now. That is not jail yet, "
+            "but it is the city writing your name in pencil."
+        )
+
+    release_fee = normalize_money(state["cash"] * JAIL_RELEASE_RATE)
+    state["cash"] = normalize_money(state["cash"] - release_fee)
+    state["arrest_count"] = int(state.get("arrest_count", 0)) + 1
+    state["police_heat"] = max(3, int(state["police_heat"] * 0.35))
+    state["stress"] += 15
+    state["current_scene"] = "street_hub"
+    state["current_phase"] = "survival"
+    add_unique_item(state["inventory"], "police station release receipt")
+    add_event(
+        state["major_events"],
+        f"Got caught after repeated crime, got sent to jail, and paid {format_money(release_fee)} to be released from the police station.",
+    )
+    return (
+        f" This time the heat catches up. You get picked up, sent to jail for processing, and held until "
+        f"the police station charges your account {format_money(release_fee)} to release you. You keep going, but that was thirty percent of your money gone."
+    )
+
+
+def apply_legal_bonus_if_ready(state: dict[str, Any], payout: int) -> str:
+    if payout <= 0 or int(state.get("legal_streak", 0)) % LEGAL_BONUS_EVERY != 0:
+        return ""
+
+    bonus = max(75, round(payout * 0.5))
+    state["cash"] += bonus
+    state["legal_bonus_count"] = int(state.get("legal_bonus_count", 0)) + 1
+    state["reputation"] += 2
+    add_event(state["lawful_history"], f"Earned a legal-route bonus of {format_money(bonus)}.")
+    add_event(state["major_events"], f"Reliable legal work paid a {format_money(bonus)} bonus.")
+    return (
+        f" Because you keep showing up the boring way, they add a {format_money(bonus)} reliability bonus. "
+        "That is the part of legal work I want you to notice: slower money, but it starts trusting you back."
+    )
+
+
+def apply_legal_work_choice(state: dict[str, Any], label: str) -> None:
     state["day_count"] += 1
     state["energy"] -= 10
     state["hunger"] -= 8
+    state["legal_streak"] = int(state.get("legal_streak", 0)) + 1
+    state["crime_streak"] = 0
+    state["police_heat"] = max(0, int(state.get("police_heat", 0)) - 1)
 
     if state.get("job_lead") or state["active_flags"].get("job_center_visited"):
-        state["legal_level"] = min(int(state.get("legal_level", 0)) + 1, len(legal_payouts) - 1)
-        payout = legal_payouts[state["legal_level"]]
-        state["job"] = legal_titles[state["legal_level"]]
-        next_level = min(state["legal_level"] + 1, len(legal_titles) - 1)
-        state["job_lead"] = legal_titles[next_level] if next_level > state["legal_level"] else None
+        current_level = min(int(state.get("legal_level", 0)), len(LEGAL_PAYOUTS) - 1)
+        payout = get_legal_payout(current_level)
+        state["job"] = LEGAL_TITLES[current_level]
+        next_level = min(current_level + 1, len(LEGAL_TITLES) - 1)
+        state["legal_level"] = next_level
+        state["job_lead"] = LEGAL_TITLES[next_level] if next_level > current_level else None
         state["cash"] += payout
         state["reputation"] += 2
         state["morality"] += 1
         state["active_flags"]["worked_shift"] = True
+        bonus_line = apply_legal_bonus_if_ready(state, payout)
         add_event(state["lawful_history"], f"Followed through on legal work: {label}.")
         add_event(state["major_events"], f"Moved up legally into {state['job']} and earned ${payout}.")
         state["last_outcome"] = (
-            f"You keep the legal route alive, move into {state['job']}, and add ${payout} of clean money to the account."
+            f"You keep the legal route alive, move into {state['job']}, and add {format_money(payout)} of clean money to the account."
+            f"{bonus_line}"
         )
         return
 
     state["legal_level"] = max(int(state.get("legal_level", 0)), 0)
-    state["job_lead"] = legal_titles[0]
+    state["job_lead"] = LEGAL_TITLES[0]
     state["active_flags"]["job_center_visited"] = True
     state["morality"] += 1
     state["stress"] -= 3
@@ -614,34 +703,28 @@ def apply_social_support_choice(state: dict[str, Any], label: str) -> None:
 
 
 def apply_quick_cash_choice(state: dict[str, Any], label: str) -> None:
-    shady_titles = [
-        "easy-money callback",
-        "cash handoff runner",
-        "package route regular",
-        "crew dispatcher",
-        "high-risk stash movement",
-        "five-grand criminal score",
-    ]
-    shady_payouts = [140, 350, 900, 1800, 3200, 5000]
-
     if not state["active_flags"].get("quick_cash_contact"):
         state["active_flags"]["quick_cash_contact"] = True
         add_unique_item(state["inventory"], "easy-money contact")
 
     state["day_count"] += 1
-    current_level = min(int(state.get("shady_level", 0)), len(shady_payouts) - 1)
-    payout = shady_payouts[current_level]
-    state["shady_level"] = min(current_level + 1, len(shady_payouts) - 1)
+    state["crime_streak"] = int(state.get("crime_streak", 0)) + 1
+    state["legal_streak"] = 0
+    current_level = min(int(state.get("shady_level", 0)), len(SHADY_TITLES) - 1)
+    payout = get_crime_payout(current_level)
+    state["shady_level"] = min(current_level + 1, len(SHADY_TITLES) - 1)
     state["cash"] += payout
     state["stress"] += 8 + state["shady_level"]
     state["morality"] -= 2
-    state["police_heat"] += 1 + state["shady_level"]
+    state["police_heat"] += get_crime_heat_gain(current_level)
     state["hunger"] -= 5
-    state["job"] = shady_titles[current_level]
+    state["job"] = SHADY_TITLES[current_level]
+    police_line = resolve_police_attention(state, current_level, payout)
     add_event(state["criminal_history"], f"Used the easy-money contact: {label}.")
-    add_event(state["major_events"], f"Made ${payout} through {state['job']}.")
+    add_event(state["major_events"], f"Made {format_money(payout)} through {state['job']}.")
     state["last_outcome"] = (
-        f"The shady route pays ${payout} fast, but {state['job']} puts more attention on you than I like."
+        f"The shady route pays {format_money(payout)} fast, exactly four times what comparable legal work would pay, "
+        f"but {state['job']} puts more attention on you than I like.{police_line}"
     )
 
 
@@ -807,50 +890,13 @@ def handle_recover_volvo(state: dict[str, Any]) -> None:
 def handle_skip_to_street_hustle(state: dict[str, Any]) -> None:
     state["current_scene"] = "street_hub"
     state["current_phase"] = "survival"
-    state["cash"] += 80
-    state["stress"] += 10
-    state["hunger"] -= 10
-    state["morality"] -= 2
-    state["police_heat"] += 1
-    add_event(state["criminal_history"], "Skipped safe planning to chase immediate money.")
-    add_event(state["major_events"], "Walked out of the hospital ready to hustle before stabilizing.")
-    state["last_outcome"] = (
-        "You move before the plan is ready, pick up quick cash, and immediately feel how thin the line is between momentum and trouble."
-    )
+    apply_quick_cash_choice(state, "Ignore the plan and chase money immediately")
 
 
 def handle_visit_job_center(state: dict[str, Any]) -> None:
     state["current_scene"] = "street_hub"
     state["current_phase"] = "survival"
-    state["day_count"] += 1
-    state["energy"] -= 6
-    state["hunger"] -= 8
-
-    if not state["active_flags"]["job_center_visited"]:
-        state["active_flags"]["job_center_visited"] = True
-        state["job_lead"] = "warehouse screening tomorrow at 8:00 AM"
-        state["morality"] += 1
-        state["stress"] -= 4
-        add_unique_item(state["inventory"], "warehouse referral slip")
-        add_event(state["lawful_history"], "Visited the workforce office for legitimate work.")
-        add_event(state["major_events"], "Picked up a warehouse screening lead from the workforce office.")
-        state["last_outcome"] = (
-            "The workforce office is fluorescent and deeply depressing, but you leave with a real lead and a time to show up."
-        )
-        return
-
-    state["job"] = "warehouse temp shift"
-    state["cash"] += 90
-    state["reputation"] += 2
-    state["morality"] += 1
-    state["energy"] -= 9
-    state["hunger"] -= 6
-    state["active_flags"]["worked_shift"] = True
-    add_event(state["lawful_history"], "Worked a legal shift to stabilize income.")
-    add_event(state["major_events"], "Completed a warehouse temp shift and got paid.")
-    state["last_outcome"] = (
-        "You drag yourself through a warehouse shift, earn honest money, and feel the strange dignity of surviving the boring way."
-    )
+    apply_legal_work_choice(state, "Visit the workforce office for a job lead")
 
 
 def handle_buy_hot_meal(state: dict[str, Any]) -> None:
@@ -913,15 +959,4 @@ def handle_manage_transport(state: dict[str, Any]) -> None:
 def handle_quick_cash_move(state: dict[str, Any]) -> None:
     state["current_scene"] = "street_hub"
     state["current_phase"] = "survival"
-    state["day_count"] += 1
-    state["cash"] += 110
-    state["stress"] += 7
-    state["morality"] -= 2
-    state["police_heat"] += 2
-    state["hunger"] -= 4
-    state["active_flags"]["quick_cash_contact"] = True
-    add_event(state["criminal_history"], "Took a shady delivery for fast money.")
-    add_event(state["major_events"], "Ran a quick-cash errand that paid immediately and felt worse afterward.")
-    state["last_outcome"] = (
-        "The cash is real, the instructions are vague, and the whole job leaves you with exactly the kind of nerves I warned you about."
-    )
+    apply_quick_cash_choice(state, "Run a quick-cash errand")

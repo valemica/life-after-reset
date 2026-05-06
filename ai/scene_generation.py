@@ -67,6 +67,8 @@ def build_ai_scene(state: dict[str, Any], fallback_narration: str) -> dict[str, 
         - When money, hunger, or health are getting bad, include one tempting shady option sometimes, even for a mostly legal player.
         - If the player keeps choosing legal_work, offer laddered legal progress like better shifts, supervisor training, certifications, delivery contracts, or small-business steps.
         - If the player keeps choosing quick_cash, offer laddered criminal progress toward larger, faster payouts while making the risk clear.
+        - The more the player commits to legal choices, the more legal/promotion options should appear.
+        - The more the player commits to crime, the more illegal options should appear, but the police heat risk must be obvious.
         - Do not offer vouchers, jobs, meals, vehicles, people, places, or phone numbers unless Tom mentions them in the narration first or known facts already include them.
         - Keep choices specific to the character's current money, health, hunger, housing, vehicle, job leads, inventory, history, and Tom's relationship with them.
         - Avoid repeating the same four options from previous scenes.
@@ -117,6 +119,10 @@ def build_user_prompt(state: dict[str, Any], fallback_narration: str) -> str:
         Job lead: {state["job_lead"] or "None"}
         Legal progress level: {state.get("legal_level", 0)}
         Shady progress level: {state.get("shady_level", 0)}
+        Legal streak: {state.get("legal_streak", 0)}
+        Crime streak: {state.get("crime_streak", 0)}
+        Arrest count: {state.get("arrest_count", 0)}
+        Crime payouts are designed to be four times comparable legal payouts, but repeated crime raises police heat and can trigger a 30 percent release fee.
         Last selected option: {state.get("last_choice_label") or "None"}
         Last selected action type: {state.get("last_choice_type") or "None"}
         Inventory: {", ".join(state.get("inventory", [])) or "None"}
@@ -232,6 +238,12 @@ def validate_ai_scene(payload: dict[str, Any], state: dict[str, Any]) -> dict[st
             }
         )
 
+    path_focus = get_path_focus(state)
+    if path_focus == "criminal" and sum(option["action_type"] == "quick_cash" for option in clean_options) < 2:
+        return None
+    if path_focus == "legal" and sum(option["action_type"] == "legal_work" for option in clean_options) < 2:
+        return None
+
     kicker = sanitize_label(str(payload.get("kicker", "Las Playas")) or "Las Playas")
     title = sanitize_label(str(payload.get("title", "The Next Move")) or "The Next Move")
     if mentions_tom_in_third_person(kicker):
@@ -312,6 +324,7 @@ def build_fallback_ai_scene(state: dict[str, Any]) -> dict[str, Any]:
     pressure_is_high = state["cash"] < 300 or state["hunger"] < 25 or state["health"] < 45
     recent_labels = get_recent_option_labels(state)
     turn_variant = int(state.get("turn_count", 0))
+    path_focus = get_path_focus(state)
 
     if last_label:
         opener = (
@@ -359,11 +372,17 @@ def build_fallback_ai_scene(state: dict[str, Any]) -> dict[str, Any]:
         shady_line = "I also remember the easy-money flyer from the hospital hallway, and I hate that it is starting to sound useful"
         option_specs.append((get_shady_fallback_label(state), "quick_cash", "easy-money flyer from the hospital hallway", "single"))
 
+    path_lines = []
+    if path_focus == "legal":
+        option_specs = get_extra_legal_option_specs(state) + option_specs
+        path_lines = get_extra_legal_option_lines()
+    elif path_focus == "criminal":
+        option_specs = get_extra_crime_option_specs(state) + option_specs
+        path_lines = get_extra_crime_option_lines(state)
+
     option_specs = filter_recent_options(option_specs, recent_labels, turn_variant)
 
-    first_option = state.get("turn_count", 0) % len(option_specs)
-    rotated_options = option_specs[first_option:] + option_specs[:first_option]
-    selected_options = rotated_options[:4]
+    selected_options = select_weighted_options(option_specs, state, path_focus, turn_variant)
     required_evidence = {evidence.lower() for _, _, evidence, _ in selected_options}
 
     option_lines = [
@@ -374,6 +393,7 @@ def build_fallback_ai_scene(state: dict[str, Any]) -> dict[str, Any]:
         *get_all_option_lines("budget_plan"),
         transport_line,
         legal_line,
+        *path_lines,
     ]
     if shady_line:
         option_lines.append(shady_line)
@@ -402,6 +422,90 @@ def build_fallback_ai_scene(state: dict[str, Any]) -> dict[str, Any]:
         ],
         "ai_generated": False,
     }
+
+
+def get_path_focus(state: dict[str, Any]) -> str:
+    lawful_moves = len(state.get("lawful_history", []))
+    criminal_moves = len(state.get("criminal_history", []))
+    legal_level = int(state.get("legal_level", 0))
+    shady_level = int(state.get("shady_level", 0))
+    morality = int(state.get("morality", 0))
+
+    if criminal_moves >= lawful_moves + 2 or shady_level >= legal_level + 2 or morality <= -4:
+        return "criminal"
+    if lawful_moves >= criminal_moves + 2 or legal_level >= shady_level + 2 or morality >= 4:
+        return "legal"
+    return "mixed"
+
+
+def get_extra_legal_option_specs(state: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+    level = int(state.get("legal_level", 0))
+    specs = [
+        ("Ask for the paid certification slot", "legal_work", "paid certification slot", "ladder"),
+        ("Take the supervisor shadow shift", "legal_work", "supervisor shadow shift", "ladder"),
+        ("Bid on a clean delivery contract", "legal_work", "clean delivery contract", "ladder"),
+    ]
+    return specs[min(level, len(specs) - 1):] + specs[:min(level, len(specs) - 1)]
+
+
+def get_extra_crime_option_specs(state: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+    level = int(state.get("shady_level", 0))
+    specs = [
+        ("Take the higher-risk delivery", "quick_cash", "higher-risk delivery", "ladder"),
+        ("Meet the crew dispatcher", "quick_cash", "crew dispatcher", "ladder"),
+        ("Move the high-risk stash", "quick_cash", "high-risk stash", "ladder"),
+    ]
+    return specs[min(level, len(specs) - 1):] + specs[:min(level, len(specs) - 1)]
+
+
+def get_extra_legal_option_lines() -> list[str]:
+    return [
+        "a paid certification slot is the kind of boring door that opens better pay later",
+        "a supervisor shadow shift could put a promotion in reach",
+        "a clean delivery contract is slower than a shortcut but a lot easier to explain to a judge",
+    ]
+
+
+def get_extra_crime_option_lines(state: dict[str, Any]) -> list[str]:
+    heat = int(state.get("police_heat", 0))
+    return [
+        f"a higher-risk delivery would pay fast, but police heat is already at {heat}",
+        "the crew dispatcher has bigger cash and bigger consequences waiting",
+        "a high-risk stash could move your account fast and put cuffs on the table just as fast",
+    ]
+
+
+def select_weighted_options(
+    option_specs: list[tuple[str, str, str, str]],
+    state: dict[str, Any],
+    path_focus: str,
+    turn_variant: int,
+) -> list[tuple[str, str, str, str]]:
+    first_option = turn_variant % len(option_specs)
+    rotated_options = option_specs[first_option:] + option_specs[:first_option]
+    if path_focus == "mixed":
+        return rotated_options[:4]
+
+    path_type = "quick_cash" if path_focus == "criminal" else "legal_work"
+    path_level = int(state.get("shady_level" if path_focus == "criminal" else "legal_level", 0))
+    desired_path_count = min(3, 2 + max(0, path_level // 3))
+    path_options = [spec for spec in rotated_options if spec[1] == path_type]
+    other_options = [spec for spec in rotated_options if spec[1] != path_type]
+
+    selected: list[tuple[str, str, str, str]] = []
+    for spec in path_options:
+        if spec not in selected:
+            selected.append(spec)
+        if len(selected) >= desired_path_count:
+            break
+
+    for spec in other_options + path_options:
+        if spec not in selected:
+            selected.append(spec)
+        if len(selected) >= 4:
+            break
+
+    return selected[:4]
 
 
 def build_food_priority_scene(state: dict[str, Any]) -> dict[str, Any]:

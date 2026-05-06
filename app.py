@@ -581,6 +581,7 @@ def render_sidebar(player_state: dict) -> None:
     housing = escape_copy(progress["housing"])
     vehicle = escape_copy(progress["vehicle"])
     job = escape_copy(progress["job"])
+    police_heat = escape_copy(progress["police_heat"])
 
     with st.sidebar:
         if st.button("Save Game", use_container_width=True):
@@ -637,7 +638,8 @@ def render_sidebar(player_state: dict) -> None:
                 <div class="info-copy">
                     <strong>Housing:</strong> {housing}<br>
                     <strong>Vehicle:</strong> {vehicle}<br>
-                    <strong>Work:</strong> {job}
+                    <strong>Work:</strong> {job}<br>
+                    <strong>Police Heat:</strong> {police_heat}
                 </div>
             </div>
             """,
