@@ -235,7 +235,6 @@ def inject_styles() -> None:
                 width: 100%;
                 max-width: none;
                 line-height: 1.8;
-                min-height: 12rem;
                 border-left: 3px solid rgba(93, 240, 145, 0.28);
                 padding-left: 1rem;
                 animation: fadeIn 260ms ease-out;
