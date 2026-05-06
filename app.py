@@ -287,6 +287,50 @@ def inject_styles() -> None:
                 margin-bottom: 0.65rem;
             }
 
+            .stat-stack {
+                display: grid;
+                gap: 0.85rem;
+                margin: 1rem 0;
+            }
+
+            .stat-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 0.85rem;
+            }
+
+            .stat-card {
+                background: rgba(4, 17, 7, 0.92);
+                border: 1px solid rgba(93, 240, 145, 0.22);
+                border-radius: 16px;
+                padding: 0.9rem 1rem;
+                min-height: 6.2rem;
+                box-sizing: border-box;
+            }
+
+            .cash-stat-card {
+                min-height: 6.6rem;
+            }
+
+            .stat-label {
+                color: var(--text-bright);
+                font-size: 0.82rem;
+                margin-bottom: 0.45rem;
+                opacity: 0.9;
+            }
+
+            .stat-value {
+                color: var(--text-bright);
+                font-size: 2rem;
+                line-height: 1.1;
+                white-space: nowrap;
+                overflow: visible;
+            }
+
+            .cash-stat-card .stat-value {
+                font-size: 1.9rem;
+            }
+
             @keyframes fadeIn {
                 from { opacity: 0; transform: translateY(4px); }
                 to { opacity: 1; transform: translateY(0); }
@@ -556,17 +600,35 @@ def render_sidebar(player_state: dict) -> None:
         if st.session_state.save_message:
             st.success(st.session_state.save_message)
 
-        top_row = st.columns(2)
-        top_row[0].metric("Day", progress["day"])
-        top_row[1].metric("Cash", progress["cash"])
-
-        middle_row = st.columns(2)
-        middle_row[0].metric("Health", progress["health"])
-        middle_row[1].metric("To $100,000", progress["goal_progress"])
-
-        bottom_row = st.columns(2)
-        bottom_row[0].metric("Hunger", progress["hunger"])
-        bottom_row[1].metric("Energy", progress["energy"])
+        st.markdown(
+            f"""
+            <div class="stat-stack">
+                <div class="stat-card cash-stat-card">
+                    <div class="stat-label">Cash</div>
+                    <div class="stat-value">{escape_copy(progress["cash"])}</div>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Day</div>
+                        <div class="stat-value">{escape_copy(progress["day"])}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">To $100,000</div>
+                        <div class="stat-value">{escape_copy(progress["goal_progress"])}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Hunger</div>
+                        <div class="stat-value">{escape_copy(progress["hunger"])}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Health</div>
+                        <div class="stat-value">{escape_copy(progress["health"])}</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         st.markdown(
             f"""
