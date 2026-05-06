@@ -53,6 +53,7 @@ def get_scene_signature(state: dict[str, Any]) -> str:
         "last_outcome": state["last_outcome"],
         "last_choice_label": state.get("last_choice_label"),
         "last_choice_type": state.get("last_choice_type"),
+        "choice_history": state.get("choice_history"),
         "legal_level": state.get("legal_level"),
         "shady_level": state.get("shady_level"),
         "tom_memory": state.get("tom_memory"),
@@ -87,6 +88,7 @@ def get_dynamic_scene_signature(state: dict[str, Any]) -> str:
         "major_events": state["major_events"],
         "flags": state["active_flags"],
         "last_outcome": state["last_outcome"],
+        "choice_history": state.get("choice_history"),
     }
     return json.dumps(fingerprint, sort_keys=True)
 
@@ -356,6 +358,7 @@ def handle_dynamic_choice(state: dict[str, Any], choice_id: str) -> None:
     action_type = selected_option["action_type"]
     label = selected_option["label"]
     remember_dynamic_scene(state, cached_scene, selected_option)
+    remember_choice(state, label, action_type)
     state["last_choice_label"] = label
     state["last_choice_type"] = action_type
     state["current_scene"] = "street_hub"
@@ -386,10 +389,24 @@ def remember_dynamic_scene(state: dict[str, Any], scene: dict[str, Any], selecte
             "day": state["day_count"],
             "title": scene.get("title", ""),
             "narration": scene.get("narration", ""),
+            "offered_labels": [option.get("label", "") for option in scene.get("options", [])],
             "chosen_label": selected_option.get("label", ""),
             "chosen_type": selected_option.get("action_type", ""),
         },
     )
+
+
+def remember_choice(state: dict[str, Any], label: str, action_type: str) -> None:
+    history = state.setdefault("choice_history", [])
+    history.append(
+        {
+            "day": state["day_count"],
+            "label": label,
+            "action_type": action_type,
+        }
+    )
+    if len(history) > 18:
+        del history[0]
 
 
 def apply_legal_work_choice(state: dict[str, Any], label: str) -> None:

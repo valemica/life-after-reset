@@ -59,6 +59,7 @@ def create_player_state(name: str) -> dict[str, Any]:
         "ending_type": None,
         "dynamic_scene": None,
         "tom_memory": [],
+        "choice_history": [],
         "last_choice_label": "",
         "last_choice_type": "",
         "legal_level": 0,
@@ -120,6 +121,7 @@ def normalize_state(state: dict[str, Any]) -> None:
     state.setdefault("ending_type", None)
     state.setdefault("dynamic_scene", None)
     state.setdefault("tom_memory", [])
+    state.setdefault("choice_history", [])
     state.setdefault("last_choice_label", "")
     state.setdefault("last_choice_type", "")
     state.setdefault("legal_level", 0)
